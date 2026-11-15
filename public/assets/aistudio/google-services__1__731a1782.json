@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "655555648138",
+    "project_id": "universal-band",
+    "storage_bucket": "universal-band.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:655555648138:android:11c77c84c6b62939a7eb73",
+        "android_client_info": {
+          "package_name": "com.universalband.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "655555648138-o25cir80llk0112mr28h7kq8op0ddao2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.universalband.app",
+            "certificate_hash": "5e8f16062e326761ec0d59789aae20c08d2c67f9"
+          }
+        },
+        {
+          "client_id": "655555648138-p93hgr60u5lft0kjoti5696qlkkvq9ff.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDEsgBWoVMOp0BR5BtruZih1Eiap8mORnU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "655555648138-p93hgr60u5lft0kjoti5696qlkkvq9ff.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Remix Universal Band App",
+  "description": "A premium, dark-themed event and ticketing platform featuring secure PIN protection, store discovery, and comprehensive profile management tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

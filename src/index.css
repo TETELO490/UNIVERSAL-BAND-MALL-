@@ -1,0 +1,269 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+
+@layer base {
+  html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  body {
+    background-color: #0A0A0A;
+    color: #FFFFFF;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Hide scrollbar for clean mobile horizontal lists */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+
+.animate-shake {
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes drawCircle {
+  0% { stroke-dashoffset: 280; opacity: 0; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes drawCheck {
+  0% { stroke-dashoffset: 70; opacity: 0; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes drawCross {
+  0% { stroke-dashoffset: 60; opacity: 0; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes fillCircleGreen {
+  0% { fill: transparent; }
+  100% { fill: #10B981; }
+}
+
+@keyframes fillCircleRed {
+  0% { fill: transparent; }
+  100% { fill: #EF4444; }
+}
+
+@keyframes fillCircleAmber {
+  0% { fill: transparent; }
+  100% { fill: #F59E0B; }
+}
+
+@keyframes fillCircleBlue {
+  0% { fill: transparent; }
+  100% { fill: #3B82F6; }
+}
+
+@keyframes scaleInSuccess {
+  0% { transform: scale(0.6); opacity: 0; }
+  50% { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes scaleInDecline {
+  0% { transform: scale(0.6) rotate(0deg); opacity: 0; }
+  30% { transform: scale(1.08) rotate(0deg); opacity: 1; }
+  45% { transform: scale(1.03) rotate(-7deg); }
+  60% { transform: scale(1.02) rotate(7deg); }
+  75% { transform: scale(1) rotate(-4deg); }
+  90% { transform: scale(1) rotate(2deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+@keyframes declineSign {
+  0% { transform: scale(0.6) rotate(0deg); opacity: 0; }
+  25% { transform: scale(1.1) rotate(0deg); opacity: 1; }
+  40% { transform: scale(1.05) rotate(-9deg); }
+  55% { transform: scale(1.02) rotate(9deg); }
+  70% { transform: scale(1) rotate(-5deg); }
+  85% { transform: scale(1) rotate(3deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+@keyframes ripplePulse {
+  0% { transform: scale(0.85); opacity: 0.8; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+@keyframes sequenceEnter {
+  0% { opacity: 0; transform: translateY(14px) scale(0.97); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes titleSequenceEnter {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.92); }
+  65% { opacity: 1; transform: translateY(2px) scale(1.04); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes progressShrink {
+  0% { width: 100%; }
+  100% { width: 0%; }
+}
+
+.animate-draw-circle {
+  stroke-dasharray: 280;
+  stroke-dashoffset: 280;
+  animation: drawCircle 0.5s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+}
+
+.animate-draw-check {
+  stroke-dasharray: 70;
+  stroke-dashoffset: 70;
+  animation: drawCheck 0.45s 0.22s cubic-bezier(0.65, 0, 0.45, 1) both;
+}
+
+.animate-draw-cross-1 {
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: drawCross 0.32s 0.2s cubic-bezier(0.65, 0, 0.45, 1) both;
+}
+
+.animate-draw-cross-2 {
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: drawCross 0.32s 0.36s cubic-bezier(0.65, 0, 0.45, 1) both;
+}
+
+.animate-circle-fill-green {
+  animation: fillCircleGreen 0.35s 0.35s ease-out forwards;
+}
+
+.animate-circle-fill-red {
+  animation: fillCircleRed 0.35s 0.35s ease-out forwards;
+}
+
+.animate-circle-fill-amber {
+  animation: fillCircleAmber 0.35s 0.35s ease-out forwards;
+}
+
+.animate-circle-fill-blue {
+  animation: fillCircleBlue 0.35s 0.35s ease-out forwards;
+}
+
+.animate-scale-in-success {
+  animation: scaleInSuccess 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.animate-scale-in-decline {
+  animation: scaleInDecline 0.65s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-decline-sign {
+  animation: declineSign 0.65s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-ripple-pulse {
+  animation: ripplePulse 1.4s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+}
+
+.animate-sequence-title {
+  animation: titleSequenceEnter 0.42s 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sequence-timer {
+  animation: sequenceEnter 0.38s 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sequence-card {
+  animation: sequenceEnter 0.42s 0.46s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sequence-button {
+  animation: sequenceEnter 0.45s 0.54s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-progress-5s {
+  animation: progressShrink 5s linear forwards;
+}
+
+/* ============================================================
+   QR CODE SCANNER ANIMATIONS
+   ============================================================ */
+
+@keyframes scanLaserSweep {
+  0% {
+    top: 4%;
+    opacity: 0.85;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+  100% {
+    top: 4%;
+    opacity: 0.85;
+  }
+}
+
+@keyframes scanReticlePulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+}
+
+@keyframes scanLockIn {
+  0% {
+    transform: scale(1.1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(0.96);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes scanRadarSweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-scan-laser {
+  animation: scanLaserSweep 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-scan-reticle {
+  animation: scanReticlePulse 2.2s ease-in-out infinite;
+}
+
+.animate-scan-lock {
+  animation: scanLockIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-scan-radar {
+  animation: scanRadarSweep 4s linear infinite;
+}
+
+
+

@@ -1,0 +1,530 @@
+{
+  "entities": {
+    "Store": {
+      "title": "Store",
+      "description": "Venues, bars, and resorts hosting events and cashless wristband terminals",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique store document ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Store or venue name",
+          "maxLength": 100
+        },
+        "location": {
+          "type": "string",
+          "description": "Location description or address",
+          "maxLength": 150
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Store avatar or image URL",
+          "maxLength": 500
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "User ID of the store owner or creator",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp or server timestamp"
+        }
+      },
+      "required": ["id", "name", "location"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Events, food stalls, or drinks available at stores",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique event document ID"
+        },
+        "storeId": {
+          "type": "string",
+          "description": "ID of the associated store",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the event or menu item",
+          "maxLength": 120
+        },
+        "date": {
+          "type": "string",
+          "description": "Display date string",
+          "maxLength": 60
+        },
+        "location": {
+          "type": "string",
+          "description": "Venue location string",
+          "maxLength": 150
+        },
+        "price": {
+          "type": "string",
+          "description": "Price string e.g. R150",
+          "maxLength": 40
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Event poster or thumbnail URL",
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "description": "Open or Closed status",
+          "enum": ["Open", "Closed"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Category item",
+          "enum": ["Events", "Food", "Drinks"]
+        },
+        "creatorId": {
+          "type": "string",
+          "description": "User ID of creator",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "description": "Event description",
+          "maxLength": 1000
+        },
+        "ticketsAvailable": {
+          "type": "number",
+          "description": "Maximum number of tickets allowed to be sold for this event"
+        },
+        "ticketsSold": {
+          "type": "number",
+          "description": "Total number of tickets sold for this event"
+        },
+        "earlyBirdPrice": {
+          "type": "number",
+          "description": "Early bird ticket price in ZAR"
+        },
+        "earlyBirdVipPrice": {
+          "type": "number",
+          "description": "Early bird VIP ticket price in ZAR"
+        },
+        "generalPrice": {
+          "type": "number",
+          "description": "General admission ticket price in ZAR"
+        },
+        "vipPrice": {
+          "type": "number",
+          "description": "VIP ticket price in ZAR"
+        },
+        "vvipPrice": {
+          "type": "number",
+          "description": "VVIP ticket price in ZAR"
+        },
+        "kidsPrice": {
+          "type": "number",
+          "description": "Kids ticket price in ZAR"
+        },
+        "eventCode": {
+          "type": "string",
+          "description": "Short uppercase event code without spaces for PayShap reference matching",
+          "maxLength": 24
+        }
+      },
+      "required": ["id", "storeId", "title", "date", "location", "price", "status", "category"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User information, contact details, role and wallet balance",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "User UID matching auth.uid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name",
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address",
+          "maxLength": 150
+        },
+        "fullName": {
+          "type": "string",
+          "description": "User legal full name",
+          "maxLength": 100
+        },
+        "photo": {
+          "type": "string",
+          "description": "User photo URL",
+          "maxLength": 500
+        },
+        "phone": {
+          "type": "string",
+          "description": "Contact phone number",
+          "maxLength": 30
+        },
+        "role": {
+          "type": "string",
+          "description": "User role e.g. Admin, Promoter, Customer",
+          "maxLength": 30
+        },
+        "walletBalance": {
+          "type": "number",
+          "description": "Current wristband wallet balance in ZAR"
+        },
+        "customerQrId": {
+          "type": "string",
+          "description": "Single permanent ONE QR code identifier assigned forever to this customer",
+          "maxLength": 80
+        }
+      },
+      "required": ["id", "name", "email", "phone"]
+    },
+    "Ticket": {
+      "title": "Ticket",
+      "description": "Purchased event tickets linked to phone numbers with real-time INSIDE/OUTSIDE attendance tracking",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique ticket document ID e.g. UB-84729"
+        },
+        "ticketId": {
+          "type": "string",
+          "description": "Ticket code e.g. UB-84729",
+          "maxLength": 32
+        },
+        "eventId": {
+          "type": "string",
+          "description": "Associated event ID",
+          "maxLength": 128
+        },
+        "storeId": {
+          "type": "string",
+          "description": "Host store / venue ID for promoter scoped security and tracking",
+          "maxLength": 128
+        },
+        "storeName": {
+          "type": "string",
+          "description": "Host store / venue name",
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "Ticket owner user ID",
+          "maxLength": 128
+        },
+        "eventName": {
+          "type": "string",
+          "description": "Event title",
+          "maxLength": 120
+        },
+        "eventTitle": {
+          "type": "string",
+          "description": "Cached event title for quick display",
+          "maxLength": 120
+        },
+        "eventDate": {
+          "type": "string",
+          "description": "Cached event date string",
+          "maxLength": 60
+        },
+        "eventLocation": {
+          "type": "string",
+          "description": "Cached event location string",
+          "maxLength": 150
+        },
+        "price": {
+          "type": "string",
+          "description": "Price paid",
+          "maxLength": 40
+        },
+        "attendeeName": {
+          "type": "string",
+          "description": "Primary attendee full name",
+          "maxLength": 100
+        },
+        "attendeePhone": {
+          "type": "string",
+          "description": "Primary attendee contact mobile phone",
+          "maxLength": 30
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Customer name",
+          "maxLength": 100
+        },
+        "customerPhone": {
+          "type": "string",
+          "description": "Customer phone",
+          "maxLength": 30
+        },
+        "customerPhoto": {
+          "type": "string",
+          "description": "Customer photo for visual identity verification at gate",
+          "maxLength": 500
+        },
+        "qrCode": {
+          "type": "string",
+          "description": "Permanent customer ONE QR reference",
+          "maxLength": 1000
+        },
+        "customerQrId": {
+          "type": "string",
+          "description": "Permanent customer ONE QR code identifier",
+          "maxLength": 80
+        },
+        "bandCode": {
+          "type": "string",
+          "description": "Unique universal band code e.g. UB-84729",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "description": "Ticket validity status: valid, used, expired",
+          "enum": ["valid", "used", "expired", "Valid", "Used"]
+        },
+        "attendanceStatus": {
+          "type": "string",
+          "description": "Real-time gate movement status: OUTSIDE, INSIDE, EXITED",
+          "enum": ["OUTSIDE", "INSIDE", "EXITED"]
+        },
+        "insideSince": {
+          "type": "string",
+          "description": "Timestamp or formatted time when entered INSIDE"
+        },
+        "exitedAt": {
+          "type": "string",
+          "description": "Timestamp or formatted time when EXITED event"
+        },
+        "lastMovementAt": {
+          "type": "string",
+          "description": "Last gate entry or exit movement timestamp"
+        },
+        "purchaseDate": {
+          "type": "string",
+          "description": "Purchase timestamp"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Purchase timestamp"
+        },
+        "checkedBy": {
+          "type": "string",
+          "description": "Bouncer or promoter who validated movement"
+        },
+        "checkedAt": {
+          "type": "string",
+          "description": "Check-in timestamp"
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Number of passes purchased in this ticket order"
+        },
+        "paymentStatus": {
+          "type": "string",
+          "description": "PayShap verification status: WAITING FOR PAYMENT, PENDING_PAYMENT, PAID, VERIFIED",
+          "enum": ["WAITING FOR PAYMENT", "PENDING_PAYMENT", "PAID", "VERIFIED"]
+        },
+        "payshapReference": {
+          "type": "string",
+          "description": "Auto-generated PayShap reference e.g. JAZZ20 Sipho GENERAL",
+          "maxLength": 120
+        },
+        "payshapRequestSent": {
+          "type": "boolean",
+          "description": "Whether admin has sent a manual PayShap request to the customer"
+        },
+        "payshapRequestSentAt": {
+          "type": "string",
+          "description": "ISO timestamp when admin sent the PayShap request"
+        },
+        "paidAt": {
+          "type": "string",
+          "description": "ISO timestamp when TymeBank SMS confirmed payment"
+        },
+        "verifiedSmsText": {
+          "type": "string",
+          "description": "Matched TymeBank SMS confirmation text",
+          "maxLength": 500
+        }
+      },
+      "required": ["id", "eventId", "attendeePhone", "attendeeName"]
+    },
+    "MenuItem": {
+      "title": "MenuItem",
+      "description": "Food or Drink menu items for Universal Band cashless POS",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique menu item ID"
+        },
+        "storeId": {
+          "type": "string",
+          "description": "Store ID where this item is served",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Item name e.g. Kota, Heineken, Coke",
+          "maxLength": 120
+        },
+        "price": {
+          "type": "string",
+          "description": "Price string e.g. R50",
+          "maxLength": 40
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Image URL for food/drink",
+          "maxLength": 500
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description of item",
+          "maxLength": 250
+        },
+        "category": {
+          "type": "string",
+          "description": "Category: food, alcohol, softdrink",
+          "enum": ["food", "alcohol", "softdrink"]
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "ingredients": {
+          "type": "array",
+          "description": "List of ingredients in this meal, e.g. rice, chicken, achaar, salad",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowIngredientRemoval": {
+          "type": "boolean",
+          "description": "Whether customers can customize meal by unchecking or removing ingredients"
+        }
+      },
+      "required": ["id", "name", "price"]
+    },
+    "Promoter": {
+      "title": "Promoter",
+      "description": "Promoter linked strictly to a specific store",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Promoter UID"
+        },
+        "uid": {
+          "type": "string",
+          "description": "User UID",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "Promoter email"
+        },
+        "name": {
+          "type": "string",
+          "description": "Promoter full name"
+        },
+        "role": {
+          "type": "string",
+          "description": "Role",
+          "enum": ["Promoter", "Admin"]
+        },
+        "storeId": {
+          "type": "string",
+          "description": "Assigned store ID"
+        },
+        "storeName": {
+          "type": "string",
+          "description": "Assigned store name"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["id", "role", "storeId"]
+    },
+    "CustomerLocation": {
+      "title": "CustomerLocation",
+      "description": "High-precision GPS coordinates for exact house delivery",
+      "type": "object",
+      "properties": {
+        "lat": {
+          "type": "number",
+          "description": "Latitude coordinate"
+        },
+        "lng": {
+          "type": "number",
+          "description": "Longitude coordinate"
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "GPS accuracy in meters (< 25m for exact house)"
+        },
+        "source": {
+          "type": "string",
+          "description": "Location capture source e.g. exact_free_gps"
+        },
+        "address": {
+          "type": "string",
+          "description": "Reverse geocoded street or village address"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds"
+        }
+      },
+      "required": ["lat", "lng", "accuracy"]
+    }
+  },
+  "firestore": {
+    "/stores/{storeId}": {
+      "schema": "Store",
+      "description": "Venues and stores on Universal Band"
+    },
+    "/promoters/{promoterId}": {
+      "schema": "Promoter",
+      "description": "Promoters with strictly assigned store scopes"
+    },
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Events, food, and drink entries"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User account profiles"
+    },
+    "/tickets/{ticketId}": {
+      "schema": "Ticket",
+      "description": "User purchased wristband tickets"
+    },
+    "/menu_food/{foodId}": {
+      "schema": "MenuItem",
+      "description": "Food items available at venue"
+    },
+    "/menu_alcohol/{alcoholId}": {
+      "schema": "MenuItem",
+      "description": "Alcoholic beverages available at venue"
+    },
+    "/menu_softdrinks/{softdrinkId}": {
+      "schema": "MenuItem",
+      "description": "Soft drinks available at venue"
+    },
+    "/customer_locations/{locationId}": {
+      "schema": "CustomerLocation",
+      "description": "Real-time exact customer drop-off coordinates"
+    }
+  }
+}
