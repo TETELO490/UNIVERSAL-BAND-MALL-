@@ -47,6 +47,7 @@ def make_slim_zip():
         'package.json',
         'capacitor.config.json',
         'config.xml',
+        'codemagic.yaml',
         'voltbuilder.json',
         'google-services.json',
         'firebase-applet-config.json',

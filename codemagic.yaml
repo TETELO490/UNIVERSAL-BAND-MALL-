@@ -1,0 +1,47 @@
+workflows:
+  android-universal-band:
+    name: Universal Band Android APK
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      java: 21
+      node: 22
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+    scripts:
+      - name: Install dependencies
+        script: |
+          npm install --legacy-peer-deps
+      - name: Build web app
+        script: |
+          npm run build
+      - name: Sync Capacitor Android project
+        script: |
+          if [ -f "google-services.json" ]; then
+            cp -f google-services.json android/app/google-services.json
+          fi
+          npx cap sync android
+      - name: Set Android SDK location
+        script: |
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/share/android-sdk}}"
+          echo "sdk.dir=$SDK_DIR" > android/local.properties
+      - name: Build Android APK
+        script: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+    artifacts:
+      - android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/**/*.aab
+    publishing:
+      email:
+        recipients:
+          - tetelophokwane98@gmail.com
+        notify:
+          success: true
+          failure: true
