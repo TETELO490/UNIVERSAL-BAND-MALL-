@@ -20,9 +20,21 @@ workflows:
       - name: Build web app
         script: |
           npm run build
-      - name: Sync Capacitor Android project
+      - name: Ensure Capacitor Android project & gradlew
         script: |
+          if [ ! -f "android/gradlew" ] || [ ! -f "android/gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Generating Capacitor Android project files while preserving custom Android sources..."
+            if [ -d "android" ]; then
+              mv android android_custom_backup
+            fi
+            npx cap add android
+            if [ -d "android_custom_backup" ]; then
+              rsync -a android_custom_backup/ android/
+              rm -rf android_custom_backup
+            fi
+          fi
           if [ -f "google-services.json" ]; then
+            mkdir -p android/app
             cp -f google-services.json android/app/google-services.json
           fi
           npx cap sync android
@@ -30,9 +42,11 @@ workflows:
         script: |
           SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
           echo "sdk.dir=$SDK_DIR" > android/local.properties
+          echo "Using Android SDK at: $SDK_DIR"
       - name: Build Android APK
         script: |
           cd android
+          ls -la
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
     artifacts:
