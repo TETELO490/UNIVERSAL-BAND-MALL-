@@ -259,6 +259,13 @@ export const ProfilePage: React.FC = () => {
             action: () => navigateTo('/admin/payshap-settings'),
           },
           {
+            id: 'admin-live-payments',
+            title: 'Live Payments & SMS Confirmation',
+            icon: Radio,
+            iconColor: 'text-emerald-400',
+            action: () => navigateTo('/admin/live-payments'),
+          },
+          {
             id: 'admin-console',
             title: 'Admin Console & Reports',
             icon: Shield,

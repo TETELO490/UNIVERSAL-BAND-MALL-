@@ -48,7 +48,7 @@ export const FloatingSupportButton: React.FC = () => {
   return (
     <aside
       aria-label="Customer Support Assistant"
-      className="fixed bottom-20 right-4 z-40 flex items-center select-none"
+      className="fixed bottom-28 right-4 z-40 flex items-center select-none"
     >
       <button
         type="button"

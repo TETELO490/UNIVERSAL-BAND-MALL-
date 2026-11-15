@@ -27,6 +27,7 @@ import {
   Bell,
   Trash2,
   Headphones,
+  ShieldCheck,
 } from 'lucide-react';
 
 export const AdminPayshapSettingsPage: React.FC = () => {
@@ -39,6 +40,8 @@ export const AdminPayshapSettingsPage: React.FC = () => {
     updateNewOrderSound,
     supportRingEnabled,
     setSupportRingEnabled,
+    smsPermissionActive,
+    lastConfirmedReference,
     navigateTo,
     setActiveModal,
   } = useApp();
@@ -297,6 +300,50 @@ export const AdminPayshapSettingsPage: React.FC = () => {
           <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
         </button>
       </form>
+
+      {/* LIVE PAYMENT CONFIRMATION SECTION */}
+      <div className="bg-[#1A1A1A] border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-xl">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-extrabold text-white flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" />
+              <span>Payment Confirmation (LIVE)</span>
+            </h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Automatic background SMS reading for real customers.
+            </p>
+          </div>
+          <span
+            className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase ${
+              smsPermissionActive
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+            }`}
+          >
+            {smsPermissionActive ? 'SMS ACTIVE' : 'SMS INACTIVE'}
+          </span>
+        </div>
+
+        <div className="bg-black/50 border border-white/10 rounded-xl p-3.5 space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400">Background Checking:</span>
+            <span className="font-bold text-emerald-400">ALWAYS ON (Background Mode)</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400">Last SMS Confirmed:</span>
+            <span className="font-mono text-[#FACC15]">{lastConfirmedReference || 'None yet'}</span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => navigateTo('/admin/live-payments')}
+          className="w-full min-h-[48px] bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition cursor-pointer"
+        >
+          <Smartphone className="w-4 h-4" />
+          <span>OPEN LIVE PAYMENTS SCREEN</span>
+        </button>
+      </div>
 
       {/* NEW ORDER SOUND SECTION */}
       <div className="bg-[#1A1A1A] border border-white/10 rounded-2xl p-5 space-y-4 shadow-xl">

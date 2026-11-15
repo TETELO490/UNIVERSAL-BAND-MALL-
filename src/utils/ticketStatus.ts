@@ -33,6 +33,123 @@ export interface ExtractedTymebankSms {
   rawText: string;
 }
 
+export const splitBankMessageTerms = (bankMessage: string = 'TymeBank'): string[] => {
+  return String(bankMessage || 'TymeBank')
+    .split(/[,\n]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+};
+
+export const doesSmsMatchBankMessage = (
+  smsText: string,
+  sender: string = '',
+  bankMessage: string = 'TymeBank'
+): string | null => {
+  const haystack = `${sender || ''} ${smsText || ''}`.toLowerCase();
+  const terms = splitBankMessageTerms(bankMessage);
+  if (terms.length === 0) return null;
+  for (const term of terms) {
+    if (haystack.includes(term.toLowerCase())) {
+      return term;
+    }
+  }
+  return null;
+};
+
+export const extractReferenceByFormat = (
+  smsText: string,
+  referenceFormat: string = 'UB-'
+): string => {
+  const prefix = String(referenceFormat || 'UB-').trim();
+  if (!prefix) return '';
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(?:^|[^A-Za-z0-9])(${escaped}[A-Za-z0-9_-]+)`, 'i');
+  const match = String(smsText || '').match(regex);
+  return match && match[1] ? match[1].trim() : '';
+};
+
+export interface LivePaymentSmsExtraction extends ExtractedTymebankSms {
+  matchedBankWord: string;
+  formattedOrderRef: string;
+}
+
+export const extractLivePaymentSmsDetails = (
+  smsText: string,
+  sender: string = '',
+  options?: { bankMessage?: string; referenceFormat?: string }
+): LivePaymentSmsExtraction => {
+  const bankMessage = (options?.bankMessage || 'TymeBank').trim() || 'TymeBank';
+  const referenceFormat = (options?.referenceFormat || 'UB-').trim() || 'UB-';
+  const text = String(smsText || '').trim();
+
+  if (!text) {
+    return {
+      valid: false,
+      reason: 'Ignored: Empty SMS body.',
+      paidAmount: 0,
+      senderName: '',
+      reference: '',
+      rawText: text,
+      matchedBankWord: '',
+      formattedOrderRef: '',
+    };
+  }
+
+  const matchedBankWord = doesSmsMatchBankMessage(text, sender, bankMessage);
+  if (!matchedBankWord) {
+    return {
+      valid: false,
+      reason: `Ignored: SMS does not contain configured Bank Message "${bankMessage}".`,
+      paidAmount: 0,
+      senderName: '',
+      reference: '',
+      rawText: text,
+      matchedBankWord: '',
+      formattedOrderRef: '',
+    };
+  }
+
+  const amountMatch = text.match(/R\s*([\d,]+\.?\d*)/i);
+  const paidAmount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) || 0 : 0;
+
+  const formattedOrderRef = extractReferenceByFormat(text, referenceFormat);
+  const refHeaderMatch =
+    text.match(/Reference:\s*([^\r\n.]+)/i) ||
+    text.match(/Ref:\s*([^\r\n.]+)/i) ||
+    text.match(/Reference\s+([A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*)/i);
+
+  const explicitRef = refHeaderMatch ? refHeaderMatch[1].trim() : '';
+  const resolvedRef = formattedOrderRef || explicitRef;
+
+  const senderMatch = text.match(
+    /\bfrom\s+([A-Za-z][A-Za-z\s.'-]{1,50}?)(?=\s*(?:\.|,|;|\bReference\b|\bRef\b|$))/i
+  );
+  const senderName = senderMatch ? senderMatch[1].trim() : '';
+
+  if (!resolvedRef) {
+    return {
+      valid: false,
+      reason: `Ignored: SMS matched Bank Message "${matchedBankWord}" but no "${referenceFormat}..." order reference or payment reference was found.`,
+      paidAmount,
+      senderName,
+      reference: '',
+      rawText: text,
+      matchedBankWord,
+      formattedOrderRef: '',
+    };
+  }
+
+  return {
+    valid: true,
+    paidAmount,
+    senderName,
+    reference: resolvedRef,
+    rawText: text,
+    matchedBankWord,
+    formattedOrderRef,
+  };
+};
+
 export const extractTymebankSmsDetails = (
   smsText: string,
   sender: string = 'TYMEBANK'

@@ -40,6 +40,31 @@ export interface SmsInboxMessage {
   dateMs: number;
 }
 
+export interface BackgroundSmsConfig {
+  enabled: boolean;
+  isAdminDevice: boolean;
+  bankMessage: string;
+  referenceFormat: string;
+  projectId: string;
+  databaseId: string;
+  apiKey: string;
+  refreshToken?: string;
+}
+
+export interface BackgroundSmsState {
+  smsGranted: boolean;
+  readSmsGranted: boolean;
+  receiveSmsGranted: boolean;
+  enabled: boolean;
+  isAdminDevice: boolean;
+  bankMessage: string;
+  referenceFormat: string;
+  lastPaymentSmsText: string;
+  lastPaymentSmsSender: string;
+  lastPaymentSmsAt: string;
+  lastConfirmedReference: string;
+}
+
 interface NativePermissionsBridge {
   checkPermission(options: { type: PermissionCategory }): Promise<{ granted: boolean; status: string }>;
   requestPermission(options: { type: PermissionCategory }): Promise<{ granted: boolean; status: string }>;
@@ -47,6 +72,8 @@ interface NativePermissionsBridge {
     granted: boolean;
     messages: SmsInboxMessage[];
   }>;
+  configureBackgroundSmsConfirmation(options: BackgroundSmsConfig): Promise<{ saved: boolean }>;
+  getBackgroundSmsState(): Promise<BackgroundSmsState>;
   startSmsListener(): Promise<{ listening: boolean; granted: boolean }>;
   stopSmsListener(): Promise<{ listening: boolean }>;
   addListener(
@@ -601,3 +628,36 @@ export async function authenticateNativeBiometric(options?: {
   }
 }
 
+/**
+ * Configures Android's always-on background SMS Payment BroadcastReceiver with Admin's live filters
+ * and Firestore connection metadata so orders confirm even when the app is closed.
+ */
+export async function configureBackgroundSmsConfirmation(
+  config: BackgroundSmsConfig
+): Promise<boolean> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return false;
+  }
+  try {
+    const res = await NativePermissions.configureBackgroundSmsConfirmation(config);
+    return Boolean(res?.saved);
+  } catch (err) {
+    console.warn('configureBackgroundSmsConfirmation error:', err);
+    return false;
+  }
+}
+
+/**
+ * Reads current SMS permission state and any background SMS confirmations persisted by Android.
+ */
+export async function getBackgroundSmsState(): Promise<BackgroundSmsState | null> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return null;
+  }
+  try {
+    return await NativePermissions.getBackgroundSmsState();
+  } catch (err) {
+    console.warn('getBackgroundSmsState error:', err);
+    return null;
+  }
+}

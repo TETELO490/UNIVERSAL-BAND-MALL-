@@ -457,6 +457,9 @@ export interface MallOrder {
   
   // Statuses
   status: 'new_order' | 'paid' | 'ready_for_pickup' | 'driver_assigned' | 'collected_by_driver' | 'out_for_delivery' | 'delivered' | 'collected' | 'cancelled';
+  paymentStatus?: 'WAITING FOR PAYMENT' | 'PENDING_PAYMENT' | 'PAID' | 'VERIFIED';
+  payshapReference?: string;
+  verifiedSmsText?: string;
   
   // QRs / Pins
   pickupQrCode?: string;

@@ -16,6 +16,8 @@ import {
   ExternalLink,
   Mic,
   Square,
+  Phone,
+  MessageCircle,
 } from 'lucide-react';
 import { fileToBase64 } from '../../utils/imageUploadHelper';
 import { isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
@@ -338,6 +340,54 @@ export const CustomerSupportModal: React.FC = () => {
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* WhatsApp & Call Support Direct Buttons */}
+        <div className="bg-[#151518] px-4 py-2.5 border-b border-white/10 flex items-center gap-2.5 shrink-0">
+          <a
+            href="https://wa.me/27763046653?text=Hi%20Universal%20Band%20Support,%20I%20need%20assistance."
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 py-2 px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-sm"
+          >
+            <MessageCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>Chat on WhatsApp</span>
+            <ExternalLink className="w-3 h-3 opacity-70 shrink-0" />
+          </a>
+
+          <a
+            href="tel:0763046653"
+            className="flex-1 py-2 px-3 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/50 text-blue-300 font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-sm"
+          >
+            <Phone className="w-4 h-4 text-blue-400 shrink-0" />
+            <span>Call Support (076 304 6653)</span>
+          </a>
+        </div>
+
+        {/* Common Questions / FAQs */}
+        <div className="bg-[#131316] px-3.5 py-2 border-b border-white/5 shrink-0">
+          <div className="text-[11px] font-bold text-gray-400 mb-1.5 flex items-center gap-1.5">
+            <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+            <span>Common Questions (tap to ask):</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              'How do I top up?',
+              'How do I get my ticket?',
+              'My payment is not showing',
+            ].map((faq) => (
+              <button
+                key={faq}
+                type="button"
+                onClick={() => {
+                  setMessageInput(faq);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-white text-[11px] font-medium transition cursor-pointer"
+              >
+                {faq}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Quick Action Buttons */}

@@ -487,6 +487,55 @@
         }
       },
       "required": ["lat", "lng", "accuracy"]
+    },
+    "SettingsPayshap": {
+      "title": "SettingsPayshap",
+      "description": "Global Admin PayShap and LIVE SMS Payment Confirmation settings and telemetry",
+      "type": "object",
+      "properties": {
+        "tymebankPayshapNumber": {
+          "type": "string",
+          "description": "Merchant TymeBank PayShap ID or cell phone number",
+          "maxLength": 80
+        },
+        "paymentBankMessage": {
+          "type": "string",
+          "description": "Keyword(s) required in bank payment SMS e.g. TymeBank, GoTyme, Capitec",
+          "maxLength": 200
+        },
+        "paymentReferenceFormat": {
+          "type": "string",
+          "description": "Order reference prefix pattern to match in SMS e.g. UB-",
+          "maxLength": 40
+        },
+        "lastPaymentSmsText": {
+          "type": "string",
+          "description": "Full text of the last matching payment SMS received",
+          "maxLength": 1000
+        },
+        "lastPaymentSmsSender": {
+          "type": "string",
+          "description": "SMS sender address of the last payment SMS received",
+          "maxLength": 100
+        },
+        "lastPaymentSmsAt": {
+          "type": "string",
+          "description": "ISO timestamp when the last payment SMS was received"
+        },
+        "lastConfirmedReference": {
+          "type": "string",
+          "description": "Last order or ticket reference automatically confirmed as PAID e.g. UB-1234",
+          "maxLength": 100
+        },
+        "supportRingEnabled": {
+          "type": "boolean",
+          "description": "Whether Admin support ringtone alert is enabled"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last updated ISO timestamp"
+        }
+      }
     }
   },
   "firestore": {
@@ -525,6 +574,10 @@
     "/customer_locations/{locationId}": {
       "schema": "CustomerLocation",
       "description": "Real-time exact customer drop-off coordinates"
+    },
+    "/settings/{settingId}": {
+      "schema": "SettingsPayshap",
+      "description": "Admin payment, notification sound, and LIVE SMS payment confirmation settings"
     }
   }
 }

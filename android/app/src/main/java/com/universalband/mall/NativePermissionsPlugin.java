@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
@@ -260,6 +261,81 @@ public class NativePermissionsPlugin extends Plugin {
 
         ret.put("granted", true);
         ret.put("messages", messagesArray);
+        call.resolve(ret);
+    }
+
+    /**
+     * Persists Admin's LIVE Payment Confirmation configuration into native SharedPreferences
+     * so background SmsPaymentReceiver works even when the app is closed or swiped away.
+     */
+    @PluginMethod
+    public void configureBackgroundSmsConfirmation(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", true);
+        boolean isAdminDevice = call.getBoolean("isAdminDevice", false);
+        String bankMessage = call.getString("bankMessage", "TymeBank");
+        String referenceFormat = call.getString("referenceFormat", "UB-");
+        String projectId = call.getString("projectId", "");
+        String databaseId = call.getString("databaseId", "(default)");
+        String apiKey = call.getString("apiKey", "");
+        String refreshToken = call.getString("refreshToken", "");
+
+        SharedPreferences prefs = getContext()
+            .getApplicationContext()
+            .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putBoolean("enabled", enabled);
+        editor.putBoolean("isAdminDevice", isAdminDevice);
+        editor.putString("bankMessage", (bankMessage != null && !bankMessage.trim().isEmpty()) ? bankMessage.trim() : "TymeBank");
+        editor.putString("referenceFormat", (referenceFormat != null && !referenceFormat.trim().isEmpty()) ? referenceFormat.trim() : "UB-");
+        if (projectId != null && !projectId.trim().isEmpty()) {
+            editor.putString("projectId", projectId.trim());
+        }
+        if (databaseId != null && !databaseId.trim().isEmpty()) {
+            editor.putString("databaseId", databaseId.trim());
+        }
+        if (apiKey != null && !apiKey.trim().isEmpty()) {
+            editor.putString("apiKey", apiKey.trim());
+        }
+        if (refreshToken != null) {
+            editor.putString("refreshToken", refreshToken.trim());
+        }
+        editor.apply();
+
+        JSObject ret = new JSObject();
+        ret.put("saved", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * Returns current Android SMS permission status and any telemetry captured while app was in background.
+     */
+    @PluginMethod
+    public void getBackgroundSmsState(PluginCall call) {
+        boolean readGranted = ContextCompat.checkSelfPermission(
+            getContext(),
+            Manifest.permission.READ_SMS
+        ) == PackageManager.PERMISSION_GRANTED;
+        boolean receiveGranted = ContextCompat.checkSelfPermission(
+            getContext(),
+            Manifest.permission.RECEIVE_SMS
+        ) == PackageManager.PERMISSION_GRANTED;
+
+        SharedPreferences prefs = getContext()
+            .getApplicationContext()
+            .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE);
+
+        JSObject ret = new JSObject();
+        ret.put("smsGranted", readGranted && receiveGranted);
+        ret.put("readSmsGranted", readGranted);
+        ret.put("receiveSmsGranted", receiveGranted);
+        ret.put("enabled", prefs.getBoolean("enabled", true));
+        ret.put("isAdminDevice", prefs.getBoolean("isAdminDevice", false));
+        ret.put("bankMessage", prefs.getString("bankMessage", "TymeBank"));
+        ret.put("referenceFormat", prefs.getString("referenceFormat", "UB-"));
+        ret.put("lastPaymentSmsText", prefs.getString("lastPaymentSmsText", ""));
+        ret.put("lastPaymentSmsSender", prefs.getString("lastPaymentSmsSender", ""));
+        ret.put("lastPaymentSmsAt", prefs.getString("lastPaymentSmsAt", ""));
+        ret.put("lastConfirmedReference", prefs.getString("lastConfirmedReference", ""));
         call.resolve(ret);
     }
 

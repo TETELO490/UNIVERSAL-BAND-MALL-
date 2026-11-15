@@ -70,6 +70,7 @@ const AppIconSettingsPage = lazyWithRetry(() => import('./pages/AppIconSettingsP
 const AppLockPage = lazyWithRetry(() => import('./pages/AppLockPage').then(m => ({ default: m.AppLockPage })));
 const AdminEventsPage = lazyWithRetry(() => import('./pages/AdminEventsPage').then(m => ({ default: m.AdminEventsPage })));
 const AdminPayshapSettingsPage = lazyWithRetry(() => import('./pages/AdminPayshapSettingsPage').then(m => ({ default: m.AdminPayshapSettingsPage })));
+const AdminLivePaymentsPage = lazyWithRetry(() => import('./pages/AdminLivePaymentsPage').then(m => ({ default: m.AdminLivePaymentsPage })));
 const PayshapTopUpPage = lazyWithRetry(() => import('./pages/PayshapTopUpPage').then(m => ({ default: m.PayshapTopUpPage })));
 
 // Lazy load modals on demand
@@ -238,6 +239,18 @@ const AppContent: React.FC = () => {
     ) {
       return isAdmin ? (
         <AdminPayshapSettingsPage />
+      ) : (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Access Denied - Admin privileges required.
+        </div>
+      );
+    }
+    if (
+      currentRoute === '/admin/live-payments' ||
+      currentRoute === '/live-payments'
+    ) {
+      return isAdmin ? (
+        <AdminLivePaymentsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
           Access Denied - Admin privileges required.

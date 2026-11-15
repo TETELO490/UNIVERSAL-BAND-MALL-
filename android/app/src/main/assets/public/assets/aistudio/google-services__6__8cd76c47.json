@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "186057622178",
+    "project_id": "lunar-idiom-zggh3",
+    "storage_bucket": "lunar-idiom-zggh3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:186057622178:android:787e85e06f5edc1e554dfb",
+        "android_client_info": {
+          "package_name": "com.universalband.mall"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "186057622178-ao35jtcffju17f66m73rkb3blcs2hli9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.universalband.mall",
+            "certificate_hash": "5e8f16062e326761ec0d59789aae20c08d2c67f9"
+          }
+        },
+        {
+          "client_id": "186057622178-i320v89cavabi40htj1m5kutknbcf2j9.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD_RlW_XvfMJwNG79ujiWmA3aJeX9GtkDU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "186057622178-i320v89cavabi40htj1m5kutknbcf2j9.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
