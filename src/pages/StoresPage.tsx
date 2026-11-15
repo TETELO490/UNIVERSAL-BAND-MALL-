@@ -361,14 +361,14 @@ export const StoresPage: React.FC = () => {
               if (isUserLoggedIn) {
                 navigateTo('/top-up');
               } else {
-                setAuthGateActionText('top up your wallet with PayShap');
+                setAuthGateActionText('top up your wallet');
                 setAuthGateTarget({ type: 'topup' });
                 setShowAuthGateModal(true);
               }
             }}
             className="w-full min-h-[44px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-md transition cursor-pointer"
           >
-            <span>Top Up with PayShap</span>
+            <span>Top Up</span>
             <ArrowRight className="w-4 h-4 stroke-[2.5]" />
           </button>
         </div>

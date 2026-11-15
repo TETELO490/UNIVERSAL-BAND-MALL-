@@ -281,17 +281,14 @@ export const WalletPage: React.FC = () => {
 
         {/* PayShap & OneVoucher Top-Up Options */}
         <div className="grid grid-cols-1 gap-3">
-          {/* CARD 1: PayShap Top-Up */}
+          {/* CARD 1: Top Up */}
           <div className="bg-[#181814] border border-[#FACC15]/40 rounded-2xl p-4 flex flex-col justify-between gap-3">
             <div>
               <h4 className="text-sm font-black text-white tracking-tight">
-                Top Up with PayShap
+                Top Up
               </h4>
               <p className="text-[11px] text-gray-300 mt-0.5 leading-snug">
-                Pay from any South African bank app to TymeBank PayShap ID{' '}
-                <span className="font-mono font-bold text-[#FACC15] tabular-nums">
-                  {tymebankPayshapNumber || '0821234567'}
-                </span>
+                Top up your wallet balance
               </p>
             </div>
             <button
@@ -299,7 +296,7 @@ export const WalletPage: React.FC = () => {
               onClick={() => navigateTo('/top-up')}
               className="w-full min-h-[44px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black font-black text-xs py-2.5 rounded-xl transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
             >
-              <span>Top Up with PayShap</span>
+              <span>Top Up</span>
               <ArrowUpRight className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>

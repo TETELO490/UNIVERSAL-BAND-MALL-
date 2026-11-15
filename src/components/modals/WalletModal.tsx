@@ -270,17 +270,14 @@ export const WalletModal: React.FC = () => {
           </div>
 
         <div className="grid grid-cols-1 gap-2.5">
-          {/* CARD: Top Up with PayShap */}
+          {/* CARD: Top Up */}
           <div className="bg-[#181814] border border-[#FACC15]/40 rounded-2xl p-3.5 flex flex-col justify-between gap-2.5">
             <div>
               <h4 className="text-xs font-black text-white tracking-tight">
-                Top Up with PayShap
+                Top Up
               </h4>
               <p className="text-[10px] text-gray-300 mt-0.5 leading-snug">
-                Instant PayShap transfer to TymeBank ID{' '}
-                <span className="font-mono font-bold text-[#FACC15] tabular-nums">
-                  {tymebankPayshapNumber || '0821234567'}
-                </span>
+                Top up your wallet balance
               </p>
             </div>
             <button
@@ -292,7 +289,7 @@ export const WalletModal: React.FC = () => {
               }}
               className="w-full min-h-[44px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black font-black text-xs py-2 rounded-xl transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
             >
-              <span>Top Up with PayShap</span>
+              <span>Top Up</span>
               <ArrowUpRight className="w-3.5 h-3.5 stroke-[2.5]" />
             </button>
           </div>

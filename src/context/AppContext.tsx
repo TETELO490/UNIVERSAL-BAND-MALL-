@@ -1541,6 +1541,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isRegistered: false,
     };
   });
+
+  // Clear admin session on app exit, close, kill, or restart
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const activeSession = sessionStorage.getItem('ub_app_active');
+      if (!activeSession) {
+        localStorage.removeItem('ub_admin_session');
+      }
+      sessionStorage.setItem('ub_app_active', 'true');
+
+      const clearAdminSession = () => {
+        localStorage.removeItem('ub_admin_session');
+        sessionStorage.removeItem('ub_app_active');
+      };
+      window.addEventListener('beforeunload', clearAdminSession);
+      window.addEventListener('pagehide', clearAdminSession);
+      return () => {
+        window.removeEventListener('beforeunload', clearAdminSession);
+        window.removeEventListener('pagehide', clearAdminSession);
+      };
+    }
+  }, []);
+
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);

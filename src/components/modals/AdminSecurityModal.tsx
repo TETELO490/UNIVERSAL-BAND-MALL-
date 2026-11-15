@@ -814,6 +814,14 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
   const verifiedCount = Object.values(verifiedLocks).filter(Boolean).length;
   const currentFailCount = failCounts[activeLockTab] || 0;
 
+  const handleModalClose = () => {
+    if (modalMode === 'VERIFY' && !checkAllLocksPassed(verifiedLocks)) {
+      triggerError('Unlock all 5 keys to continue');
+      return;
+    }
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
       <div
@@ -823,7 +831,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
       >
         {/* Close Button */}
         <button
-          onClick={onClose}
+          onClick={handleModalClose}
           className="absolute top-4 right-4 text-gray-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition cursor-pointer"
         >
           <X className="w-5 h-5" />
