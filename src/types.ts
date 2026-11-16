@@ -30,10 +30,14 @@ export interface EventItem {
   ticketsAvailable?: number;
   ticketsSold?: number;
   earlyBirdPrice?: number | string;
+  earlyBirdLimit?: number | string;
   generalPrice?: number | string;
+  generalLimit?: number | string;
   vipPrice?: number | string;
+  vipLimit?: number | string;
   vvipPrice?: number | string;
   earlyBirdVipPrice?: number | string;
+  earlyBirdVipLimit?: number | string;
   eventCode?: string;
   kidsPrice?: number | string;
 }
@@ -171,6 +175,15 @@ export interface NewOrderSoundConfig {
   customName?: string;
   customDataUrl?: string;
   volume?: number;
+}
+
+export interface ActivePaymentAlarm {
+  id: string;
+  amount: string;
+  numericAmount?: number;
+  customer: string;
+  rawSms: string;
+  dateMs: number;
 }
 
 export interface AppNotificationBanner {

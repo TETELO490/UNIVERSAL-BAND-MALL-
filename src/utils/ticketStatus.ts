@@ -68,6 +68,68 @@ export const extractReferenceByFormat = (
   return match && match[1] ? match[1].trim() : '';
 };
 
+export interface PaymentAlertSmsDetails {
+  isPayment: boolean;
+  amount: string;
+  numericAmount: number;
+  senderName: string;
+  rawText: string;
+}
+
+/**
+ * Checks if SMS is from GoTyme Bank / TymeBank AND contains "You received" and "from".
+ * Triggers for ANY amount (R1, R5, R50, R100, R1000, etc.).
+ */
+export const checkIsTymeBankPaymentAlertSms = (
+  smsText: string,
+  sender: string = ''
+): PaymentAlertSmsDetails => {
+  const text = String(smsText || '').trim();
+  const lowerHaystack = ((sender || '') + ' ' + text).toLowerCase();
+
+  const isTymeBank =
+    lowerHaystack.includes('gotyme') ||
+    lowerHaystack.includes('tymebank') ||
+    lowerHaystack.includes('tyme bank') ||
+    lowerHaystack.includes('tyme');
+
+  const hasReceived = lowerHaystack.includes('you received');
+  const hasFrom = lowerHaystack.includes('from');
+
+  if (!isTymeBank || !hasReceived || !hasFrom) {
+    return {
+      isPayment: false,
+      amount: '',
+      numericAmount: 0,
+      senderName: '',
+      rawText: text,
+    };
+  }
+
+  // Extract amount: e.g. "received R1.00" or "received R 1.00" or "R50"
+  const amountMatch =
+    text.match(/received\s+([A-Za-z$€£]*\s*[\d,]+(?:\.\d+)?)/i) ||
+    text.match(/(R\s*[\d,]+(?:\.\d+)?)/i);
+
+  const amountStr = amountMatch ? amountMatch[1].trim() : 'Payment';
+  const numMatch = amountStr.match(/[\d,]+(?:\.\d+)?/);
+  const numericAmount = numMatch ? parseFloat(numMatch[0].replace(/,/g, '')) || 0 : 0;
+
+  // Extract sender: e.g. "from T. PHOKWANE." or "from T. PHOKWANE. Your available"
+  const senderMatch = text.match(
+    /\bfrom\s+([^.]+?)(?=\s*(?:\.|\bYour available\b|\bYour balance\b|\bRef\b|\bAvailable\b|$))/i
+  );
+  const senderName = senderMatch ? senderMatch[1].trim() : 'Customer';
+
+  return {
+    isPayment: true,
+    amount: amountStr.startsWith('R') || amountStr.startsWith('r') ? amountStr : `R${amountStr}`,
+    numericAmount,
+    senderName,
+    rawText: text,
+  };
+};
+
 export interface LivePaymentSmsExtraction extends ExtractedTymebankSms {
   matchedBankWord: string;
   formattedOrderRef: string;

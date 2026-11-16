@@ -62,7 +62,18 @@ export interface BackgroundSmsState {
   lastPaymentSmsText: string;
   lastPaymentSmsSender: string;
   lastPaymentSmsAt: string;
+  lastPaymentAmount?: string;
   lastConfirmedReference: string;
+  alarmActive?: boolean;
+}
+
+export interface NativePaymentAlarmEvent {
+  id: string;
+  amount: string;
+  customer?: string;
+  sender: string;
+  body: string;
+  dateMs: number;
 }
 
 interface NativePermissionsBridge {
@@ -86,6 +97,28 @@ interface NativePermissionsBridge {
     subtitle?: string;
     description?: string;
   }): Promise<BiometricAuthResult>;
+  stopPaymentAlarm(): Promise<{ stopped: boolean }>;
+  isPaymentAlarmActive(): Promise<{ active: boolean }>;
+  configurePaymentAlarm(options: {
+    mode: 'preset' | 'custom';
+    presetId: string;
+    volume: number;
+    customDataUrl?: string;
+  }): Promise<{ saved: boolean }>;
+  triggerTestAlarm(options?: { volume?: number }): Promise<{ started: boolean }>;
+  consumePendingNotificationRoute(): Promise<{ route: string }>;
+  addListener(
+    eventName: 'paymentAlarm',
+    listenerFunc: (data: NativePaymentAlarmEvent) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'paymentAlarmStopped',
+    listenerFunc: () => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'notificationNavigate',
+    listenerFunc: (data: { route?: string }) => void
+  ): Promise<PluginListenerHandle>;
   openAppSettings(): Promise<{ opened: boolean }>;
   pickContact(): Promise<{ granted: boolean; cancelled?: boolean; name?: string; phone?: string }>;
 }
@@ -136,7 +169,7 @@ const CATEGORY_LABELS: Record<PermissionCategory, { title: string; message: stri
   },
   sms: {
     title: 'Permission needed: SMS Messages',
-    message: 'SMS permission was denied. Please allow SMS in App Settings for PayShap auto-confirmation.',
+    message: 'Payment Alarm will not work without SMS permission. We only read incoming bank payment SMS so your phone rings loudly when a real payment arrives.',
   },
   phoneState: {
     title: 'Permission needed: Phone Status',
@@ -478,7 +511,7 @@ export async function ensureSmsPermission(): Promise<PermissionCheckResult> {
   if (Capacitor.isNativePlatform()) {
     const nativeRes = await requestNativeAndroidPermission(
       'sms',
-      'SMS permission denied. You can still top-up manually, but auto-confirm will not work.'
+      'Payment Alarm will not work without SMS permission. Allow SMS access so Universal Band can ring an alarm when GoTyme / TymeBank payment SMS arrive.'
     );
     if (nativeRes.granted) {
       localStorage.setItem('tymebank_sms_permission', 'true');
@@ -660,4 +693,105 @@ export async function getBackgroundSmsState(): Promise<BackgroundSmsState | null
     console.warn('getBackgroundSmsState error:', err);
     return null;
   }
+}
+
+export async function stopNativePaymentAlarm(): Promise<boolean> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return false;
+  }
+  try {
+    const res = await NativePermissions.stopPaymentAlarm();
+    return Boolean(res?.stopped);
+  } catch (err) {
+    console.warn('stopNativePaymentAlarm error:', err);
+    return false;
+  }
+}
+
+export async function isNativePaymentAlarmActive(): Promise<boolean> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return false;
+  }
+  try {
+    const res = await NativePermissions.isPaymentAlarmActive();
+    return Boolean(res?.active);
+  } catch (err) {
+    return false;
+  }
+}
+
+export async function configureNativePaymentAlarm(options: {
+  mode: 'preset' | 'custom';
+  presetId: string;
+  volume: number;
+  customDataUrl?: string;
+}): Promise<boolean> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return false;
+  }
+  try {
+    const res = await NativePermissions.configurePaymentAlarm(options);
+    return Boolean(res?.saved);
+  } catch (err) {
+    console.warn('configureNativePaymentAlarm error:', err);
+    return false;
+  }
+}
+
+export async function triggerNativeTestAlarm(options?: { volume?: number }): Promise<boolean> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return false;
+  }
+  try {
+    const res = await NativePermissions.triggerTestAlarm(options);
+    return Boolean(res?.started);
+  } catch (err) {
+    console.warn('triggerNativeTestAlarm error:', err);
+    return false;
+  }
+}
+
+export async function consumePendingNotificationRoute(): Promise<string> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return '';
+  }
+  try {
+    const res = await NativePermissions.consumePendingNotificationRoute();
+    return String(res?.route || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function subscribeNativePaymentAlarmEvents(handlers: {
+  onAlarm: (data: NativePaymentAlarmEvent) => void;
+  onStopped: () => void;
+  onNavigate?: (route: string) => void;
+}): Promise<() => void> {
+  if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) {
+    return () => {};
+  }
+  const handles: PluginListenerHandle[] = [];
+  try {
+    handles.push(await NativePermissions.addListener('paymentAlarm', handlers.onAlarm));
+    handles.push(await NativePermissions.addListener('paymentAlarmStopped', handlers.onStopped));
+    if (handlers.onNavigate) {
+      handles.push(
+        await NativePermissions.addListener('notificationNavigate', (data) => {
+          if (data?.route) {
+            handlers.onNavigate?.(String(data.route));
+          }
+        })
+      );
+    }
+  } catch (err) {
+    console.warn('subscribeNativePaymentAlarmEvents error:', err);
+  }
+  return () => {
+    handles.forEach((h) => {
+      try {
+        void h.remove();
+      } catch {}
+    });
+  };
 }

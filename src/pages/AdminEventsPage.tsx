@@ -38,10 +38,16 @@ export const AdminEventsPage: React.FC = () => {
   } = useApp();
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isAdmin =
-    roleLower === 'admin' ||
-    isAuthorizedAdminEmail(currentUser?.email) ||
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
     localStorage.getItem('ub_admin_session') === 'true';
+
+  const isAdmin =
+    has5LocksPassed &&
+    (roleLower === 'admin' ||
+      isAuthorizedAdminEmail(currentUser?.email) ||
+      localStorage.getItem('ub_admin_session') === 'true');
 
   const [isSmsModalOpen, setIsSmsModalOpen] = useState<boolean>(false);
   const [selectedPayshapTicket, setSelectedPayshapTicket] = useState<Ticket | null>(null);
@@ -213,7 +219,7 @@ export const AdminEventsPage: React.FC = () => {
             <h1 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
               <span>Events Dashboard</span>
             </h1>
-            <p className="text-xs text-gray-400">Events, ticket prices & TymeBank SMS auto-confirm</p>
+            <p className="text-xs text-gray-400">Events, ticket prices &amp; PayShap payments</p>
           </div>
         </div>
 
@@ -504,7 +510,7 @@ export const AdminEventsPage: React.FC = () => {
               {editingTargetEvent ? 'Edit Event & Ticket Prices' : 'Create New Event'}
             </h2>
             <p className="text-xs text-gray-400 mb-4">
-              Set event code and individual prices for PayShap SMS auto-matching
+              Set event code and individual ticket prices
             </p>
 
             {formError && (

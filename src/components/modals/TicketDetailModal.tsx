@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Capacitor } from '@capacitor/core';
 import { useApp } from '../../context/AppContext';
 import {
   X,
@@ -14,7 +13,6 @@ import {
   AlertCircle,
   Utensils,
   Clock,
-  RefreshCw,
 } from 'lucide-react';
 import { maskPhoneNumber } from '../../utils/attendanceService';
 import { getEventPayshapReference, isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
@@ -29,7 +27,6 @@ export const TicketDetailModal: React.FC = () => {
     tickets,
     openEventFoodPreorder,
     tymebankPayshapNumber,
-    scanRealSmsInbox,
     navigateTo,
   } = useApp();
   const [copied, setCopied] = useState<boolean>(false);
@@ -38,8 +35,6 @@ export const TicketDetailModal: React.FC = () => {
   const [phoneTapActive, setPhoneTapActive] = useState<boolean>(false);
   const [nfcWriteStatus, setNfcWriteStatus] = useState<string>('');
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
-  const [isCheckingSms, setIsCheckingSms] = useState<boolean>(false);
-  const [smsCheckNotice, setSmsCheckNotice] = useState<string | null>(null);
 
   if (!rawSelectedTicket) return null;
 
@@ -253,39 +248,8 @@ export const TicketDetailModal: React.FC = () => {
                   </div>
                 )}
                 <p className="text-[10px] text-amber-200/90 leading-snug">
-                  Pay from your bank app (Capitec, FNB, Nedbank, Standard Bank) or approve the PayShap Request in your bank app. Once the TymeBank SMS is received, this ticket changes to PAID ✅ automatically.
+                  Pay from your bank app (Capitec, FNB, Nedbank, Standard Bank) or approve the PayShap Request in your bank app. An administrator will verify your payment and mark this ticket as PAID ✅.
                 </p>
-                {Capacitor.isNativePlatform() && (
-                  <div className="space-y-1.5 pt-1">
-                    <button
-                      type="button"
-                      disabled={isCheckingSms}
-                      onClick={async () => {
-                        setSmsCheckNotice(null);
-                        setIsCheckingSms(true);
-                        try {
-                          const res = await scanRealSmsInbox({ promptIfNeeded: true });
-                          if (!res.granted) {
-                            setSmsCheckNotice('SMS permission needed to verify directly from your phone SMS inbox.');
-                          } else if (res.matchedCount > 0) {
-                            setSmsCheckNotice('Payment matched from SMS inbox! Ticket is now PAID ✅.');
-                          } else {
-                            setSmsCheckNotice(`Checked ${res.scannedCount} SMS messages — no matching TymeBank receipt yet.`);
-                          }
-                        } finally {
-                          setIsCheckingSms(false);
-                        }
-                      }}
-                      className="w-full min-h-[38px] bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-[11px] rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isCheckingSms ? 'animate-spin' : ''}`} />
-                      <span>{isCheckingSms ? 'Checking SMS Inbox...' : 'Verify from SMS Inbox'}</span>
-                    </button>
-                    {smsCheckNotice && (
-                      <p className="text-[10px] font-bold text-amber-100">{smsCheckNotice}</p>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 

@@ -6,7 +6,7 @@ import {
   ensureSmsPermission,
   openAppSettings,
 } from '../../utils/nativePermissions';
-import { X, ShieldCheck, CheckCircle2, AlertCircle, Smartphone, RefreshCw, Send } from 'lucide-react';
+import { X, ShieldCheck, CheckCircle2, AlertCircle, Smartphone, RefreshCw, Settings } from 'lucide-react';
 
 interface TymebankSmsModalProps {
   isOpen: boolean;
@@ -15,12 +15,10 @@ interface TymebankSmsModalProps {
 
 export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onClose }) => {
   const {
-    events,
     tymebankPayshapNumber,
     updateTymebankPayshapNumber,
     tymebankSmsLogs,
     clearTymebankSmsLogs,
-    processTymebankSms,
     scanRealSmsInbox,
   } = useApp();
 
@@ -30,8 +28,6 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
   const [permissionGranted, setPermissionGranted] = useState<boolean>(() => {
     return localStorage.getItem('tymebank_sms_permission') === 'true';
   });
-  const [testSender, setTestSender] = useState<string>('TYMEBANK');
-  const [testSmsText, setTestSmsText] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isScanningInbox, setIsScanningInbox] = useState<boolean>(false);
@@ -61,17 +57,19 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
     if (res.granted) {
       setPermissionGranted(true);
       localStorage.setItem('tymebank_sms_permission', 'true');
-      setSuccessMsg('Real Android SMS Read Permission granted. Universal Band is now listening and scanning for TymeBank PayShap payments.');
+      setSuccessMsg(
+        'SMS Permission granted. Universal Band is now listening for real GoTyme / TymeBank payment SMS to ring the Payment Alarm.'
+      );
       const scanRes = await scanRealSmsInbox({ promptIfNeeded: false });
       if (scanRes.matchedCount > 0) {
         setSuccessMsg(
-          `SMS Permission granted & auto-approved ${scanRes.matchedCount} payment${scanRes.matchedCount === 1 ? '' : 's'} from your SMS inbox!`
+          `SMS Permission granted. Found ${scanRes.matchedCount} GoTyme / TymeBank payment SMS alert${scanRes.matchedCount === 1 ? '' : 's'} in inbox. Tickets require manual approval.`
         );
       }
     } else {
       setPermissionGranted(false);
       localStorage.setItem('tymebank_sms_permission', 'false');
-      setErrorMsg(res.message || 'Permission needed: Please allow SMS access in Android App Settings.');
+      setErrorMsg(res.message || 'Payment Alarm will not work without SMS permission.');
     }
   };
 
@@ -83,55 +81,21 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
       const scanRes = await scanRealSmsInbox({ promptIfNeeded: true });
       if (!scanRes.granted) {
         setPermissionGranted(false);
-        setErrorMsg('Permission needed: Allow SMS access in Android App Settings to read your TymeBank SMS inbox.');
+        setErrorMsg('Payment Alarm will not work without SMS permission.');
         return;
       }
       setPermissionGranted(true);
       if (scanRes.matchedCount > 0) {
         setSuccessMsg(
-          `Scanned ${scanRes.scannedCount} SMS messages and auto-approved ${scanRes.matchedCount} payment${scanRes.matchedCount === 1 ? '' : 's'}!`
+          `Checked ${scanRes.scannedCount} SMS messages and found ${scanRes.matchedCount} GoTyme / TymeBank payment alert${scanRes.matchedCount === 1 ? '' : 's'}. Review & approve tickets manually in Payment Approval.`
         );
       } else {
         setSuccessMsg(
-          `Scanned ${scanRes.scannedCount} recent phone SMS message${scanRes.scannedCount === 1 ? '' : 's'}. No new unmatched TymeBank payments found.`
+          `Checked ${scanRes.scannedCount} recent phone SMS message${scanRes.scannedCount === 1 ? '' : 's'}. No new GoTyme / TymeBank payment alerts found.`
         );
       }
     } finally {
       setIsScanningInbox(false);
-    }
-  };
-
-  const handleLoadFromEvent = () => {
-    setErrorMsg(null);
-    if (events.length === 0) {
-      setErrorMsg('Create an event on the Events page first to generate a matching TymeBank SMS example.');
-      return;
-    }
-    const ev = events[0];
-    const genPrice = parseFloat(String(ev.generalPrice || ev.price || '').replace(/[^0-9.]/g, '')) || 0;
-    if (genPrice <= 0) {
-      setErrorMsg(`Event "${ev.title}" has no General price configured yet.`);
-      return;
-    }
-    setTestSender('TYMEBANK');
-    setTestSmsText(`TYMEBANK: You received R${genPrice.toFixed(2)} from Sipho. Reference: Universal Band - ${ev.title}.`);
-  };
-
-  const handleTestSmsSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    if (!permissionGranted) {
-      setErrorMsg('Please grant SMS Read Permission first before processing TymeBank SMS messages.');
-      return;
-    }
-
-    const result = processTymebankSms(testSmsText, testSender);
-    if (result.success) {
-      setSuccessMsg(result.message);
-    } else {
-      setErrorMsg(result.message);
     }
   };
 
@@ -154,8 +118,10 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
             <Smartphone className="w-6 h-6 text-[#FACC15]" />
           </div>
           <div>
-            <h2 className="text-xl font-black text-white">TymeBank PayShap SMS Auto-Confirm</h2>
-            <p className="text-xs text-gray-400">Automatic payment confirmation by reading TymeBank SMS</p>
+            <h2 className="text-xl font-black text-white">GoTyme / TymeBank SMS Listener</h2>
+            <p className="text-xs text-gray-400">
+              Plays loud Payment Alarm on incoming bank SMS — manual approval only
+            </p>
           </div>
         </div>
 
@@ -179,7 +145,7 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
               </span>
             </div>
             <p className="text-[11px] text-gray-400 mt-1">
-              Customers pay via PayShap from their own bank app (Capitec, FNB, Nedbank, Standard Bank) to this number.
+              Customers pay via PayShap from their bank app to this number. You verify the bank SMS and approve manually.
             </p>
           </div>
         </div>
@@ -194,8 +160,8 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
               </h4>
               <p className="text-[11px] text-gray-400 mt-0.5">
                 {permissionGranted
-                  ? 'Permission granted. Listening to real phone SMS inbox.'
-                  : 'Required to automatically read incoming TymeBank SMS payments.'}
+                  ? 'Permission granted. Listening for real GoTyme Bank / TymeBank SMS.'
+                  : 'Required for Payment Alarm to detect incoming bank payment SMS.'}
               </p>
             </div>
             {!permissionGranted ? (
@@ -204,7 +170,7 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
                 onClick={requestSmsPermission}
                 className="bg-[#FACC15] hover:bg-yellow-400 text-black font-black px-4 py-2 rounded-xl text-xs transition cursor-pointer shadow-md shrink-0"
               >
-                Grant Permission
+                Allow SMS
               </button>
             ) : (
               <span className="text-xs font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-3 py-1.5 rounded-xl shrink-0">
@@ -212,6 +178,18 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
               </span>
             )}
           </div>
+
+          {!permissionGranted && (
+            <div className="bg-rose-950/60 border border-rose-500/40 rounded-xl p-3 space-y-2">
+              <p className="text-xs font-black text-rose-200">
+                Payment Alarm will not work without SMS permission
+              </p>
+              <p className="text-[11px] text-rose-100/80 leading-relaxed">
+                Universal Band listens for real GoTyme Bank / TymeBank SMS containing &quot;You received&quot; and &quot;from&quot; for any amount so your alarm rings loudly when money arrives.
+              </p>
+            </div>
+          )}
+
           {Capacitor.isNativePlatform() && (
             <div className="flex items-center gap-2">
               <button
@@ -221,66 +199,20 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
                 className="flex-1 bg-[#FACC15]/15 hover:bg-[#FACC15]/25 border border-[#FACC15]/40 text-[#FACC15] font-black px-3 py-2 rounded-xl text-xs transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isScanningInbox ? 'animate-spin' : ''}`} />
-                <span>{isScanningInbox ? 'Scanning SMS Inbox...' : 'Scan Phone SMS Inbox Now'}</span>
+                <span>{isScanningInbox ? 'Checking SMS Inbox...' : 'Check Recent Phone SMS'}</span>
               </button>
               {!permissionGranted && (
                 <button
                   type="button"
                   onClick={() => void openAppSettings()}
-                  className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-2 rounded-xl text-xs transition cursor-pointer"
+                  className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1 transition cursor-pointer"
                 >
-                  Open Settings
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Settings</span>
                 </button>
               )}
             </div>
           )}
-        </div>
-
-        {/* Incoming TymeBank SMS Reader / Test Tool */}
-        <div className="bg-[#1A1A1A] border border-white/10 rounded-2xl p-4 mb-5 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-xs font-black uppercase text-[#FACC15] tracking-wider">Incoming TymeBank SMS Reader</h3>
-            <button
-              type="button"
-              onClick={handleLoadFromEvent}
-              className="text-[10px] bg-white/10 hover:bg-white/20 text-[#FACC15] font-bold px-2.5 py-1 rounded-lg transition cursor-pointer"
-            >
-              Fill From My Event
-            </button>
-          </div>
-          <form onSubmit={handleTestSmsSubmit} className="space-y-2.5">
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] text-gray-400 font-bold shrink-0">SMS Sender:</label>
-              <select
-                value={testSender}
-                onChange={(e) => setTestSender(e.target.value)}
-                className="flex-1 bg-black text-white px-2.5 py-1.5 rounded-lg border border-white/15 text-xs focus:outline-none focus:border-[#FACC15] font-mono"
-              >
-                <option value="TYMEBANK">TYMEBANK (Allowed)</option>
-                <option value="MTN">MTN (Ignored)</option>
-                <option value="Vodacom">Vodacom (Ignored)</option>
-                <option value="Nedbank">Nedbank (Ignored)</option>
-                <option value="Friend">Friend (Ignored)</option>
-              </select>
-            </div>
-            <textarea
-              rows={2}
-              value={testSmsText}
-              onChange={(e) => setTestSmsText(e.target.value)}
-              placeholder='Paste TymeBank SMS e.g. "You received R<amount> from Sipho. Reference: Universal Band - <Event Name>" or "Universal Band Top Up"'
-              className="w-full bg-black text-white p-3 rounded-xl border border-white/15 text-xs focus:outline-none focus:border-[#FACC15] font-mono"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-gray-400">Read-only • Never deletes SMS • Requires &quot;You received&quot;, &quot;R&quot;, &quot;Reference&quot;</span>
-              <button
-                type="submit"
-                className="bg-[#FACC15] hover:bg-yellow-400 text-black font-black px-4 py-2 rounded-xl text-xs transition flex items-center gap-1.5 cursor-pointer shadow-md shrink-0"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Process SMS</span>
-              </button>
-            </div>
-          </form>
         </div>
 
         {/* Success / Error Messages */}
@@ -297,11 +229,11 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
           </div>
         )}
 
-        {/* Confirmed SMS Logs */}
+        {/* Incoming Bank Payment Alert Log */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-black uppercase text-gray-400 tracking-wider">
-              Processed TymeBank SMS Log ({tymebankSmsLogs.length})
+              Incoming Bank SMS Alerts ({tymebankSmsLogs.length})
             </h3>
             {tymebankSmsLogs.length > 0 && (
               <button
@@ -315,14 +247,14 @@ export const TymebankSmsModal: React.FC<TymebankSmsModalProps> = ({ isOpen, onCl
           </div>
           {tymebankSmsLogs.length === 0 ? (
             <div className="text-center py-6 text-gray-500 text-xs bg-black/40 rounded-xl border border-white/5">
-              No TymeBank SMS messages processed yet.
+              No GoTyme / TymeBank payment SMS alerts detected yet.
             </div>
           ) : (
             <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
               {tymebankSmsLogs.map((log) => (
                 <div key={log.id} className="bg-black/60 border border-white/10 rounded-xl p-3 text-xs space-y-1">
                   <div className="flex items-center justify-between text-[10px] text-gray-400">
-                    <span className="font-mono text-[#FACC15]">TYMEBANK SMS</span>
+                    <span className="font-mono text-[#FACC15]">BANK PAYMENT SMS</span>
                     <span>{log.time}</span>
                   </div>
                   <p className="font-mono text-gray-300 text-[11px] bg-white/5 p-1.5 rounded">{log.text}</p>

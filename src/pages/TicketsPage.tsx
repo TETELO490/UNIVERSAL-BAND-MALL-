@@ -14,7 +14,6 @@ import {
   CheckCircle2,
   PieChart,
   Utensils,
-  Unlock,
 } from 'lucide-react';
 import { maskPhoneNumber } from '../utils/attendanceService';
 import { isEventExpired } from '../utils/dateHelper';
@@ -32,7 +31,6 @@ export const TicketsPage: React.FC = () => {
     for (const t of tickets) {
       const expired = isEventExpired(t) || t.status === 'expired';
       if (t.status === 'billed' || (t.status as string) === 'Billed' || t.isBilled || expired) {
-        // Expired and billed tickets go to account ticket history, not active normal tickets page
         billed.push(t);
       } else {
         active.push(t);
@@ -178,154 +176,163 @@ export const TicketsPage: React.FC = () => {
               <div
                 key={ticket.id || index}
                 onClick={() => handleTicketClick(ticket)}
-                className={`bg-[#1A1A1A] rounded-2xl border overflow-hidden shadow-xl transition-all duration-200 cursor-pointer group ${
+                className={`bg-[#161619] rounded-3xl border overflow-hidden shadow-2xl transition-all duration-200 cursor-pointer group ${
                   isBilled
-                    ? 'border-yellow-500/30 hover:border-yellow-400/60 bg-gradient-to-b from-[#1E1A10] to-[#141414]'
+                    ? 'border-yellow-500/30 hover:border-yellow-400/60 bg-gradient-to-b from-[#1E1A10] to-[#161619]'
                     : isUsed
                     ? 'border-blue-500/30 hover:border-blue-400/60'
-                    : 'border-white/10 hover:border-[#FACC15]/40'
+                    : 'border-white/10 hover:border-[#FACC15]/50'
                 }`}
               >
                 {/* Top Band Header */}
                 <div
-                  className={`p-4 border-b border-white/5 flex items-center justify-between ${
+                  className={`px-5 py-3.5 border-b border-white/5 flex items-center justify-between ${
                     isBilled
-                      ? 'bg-gradient-to-r from-yellow-950/60 via-zinc-900 to-black'
+                      ? 'bg-gradient-to-r from-yellow-950/60 via-zinc-900 to-[#161619]'
                       : isUsed
-                      ? 'bg-gradient-to-r from-blue-950/60 via-zinc-900 to-black'
-                      : 'bg-gradient-to-r from-yellow-500/20 via-zinc-900 to-black'
+                      ? 'bg-gradient-to-r from-blue-950/60 via-zinc-900 to-[#161619]'
+                      : 'bg-gradient-to-r from-yellow-500/15 via-zinc-900 to-[#161619]'
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <div className="w-6 h-6 rounded-full bg-[#FACC15] flex items-center justify-center text-black font-black text-[10px]">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-xl bg-[#FACC15] flex items-center justify-center text-black font-black text-xs shadow-md">
                       UB
                     </div>
-                    <span className="text-[11px] font-mono tracking-wider text-gray-300 font-semibold">
-                      {ticket.bandCode}
+                    <span className="text-xs font-mono tracking-wider text-gray-200 font-extrabold">
+                      {ticket.bandCode || ticket.ticketId}
                     </span>
                   </div>
 
                   {/* Status Badge */}
                   <div className="flex items-center gap-1.5">
                     {isTicketWaitingPayment(ticket) ? (
-                      <span className="inline-flex items-center gap-1 bg-amber-500/20 text-amber-300 border border-amber-500/50 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                      <span className="inline-flex items-center gap-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-3 py-1 rounded-full shadow-sm">
                         <Clock className="w-3 h-3" />
                         <span>WAITING FOR PAYMENT</span>
                       </span>
                     ) : isTicketPaid(ticket) ? (
-                      <span className="inline-flex items-center gap-1 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                      <span className="inline-flex items-center gap-1 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 text-[10px] font-black px-3 py-1 rounded-full shadow-sm">
                         <CheckCircle2 className="w-3 h-3" />
-                        <span>Ticket Confirmed - PAID ✅</span>
+                        <span>PAID ✅</span>
                       </span>
                     ) : isBilled ? (
-                      <span className="inline-flex items-center gap-1 bg-yellow-400/20 text-[#FACC15] border border-yellow-400/40 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full shadow-sm">
+                      <span className="inline-flex items-center gap-1 bg-yellow-400/20 text-[#FACC15] border border-yellow-400/40 text-[10px] font-extrabold px-3 py-1 rounded-full shadow-sm">
                         <Receipt className="w-3 h-3" />
-                        <span>BILLED AT MIDNIGHT</span>
+                        <span>BILLED</span>
                       </span>
                     ) : isUsed ? (
-                      <span className="inline-flex items-center gap-1 bg-blue-950/80 text-blue-400 border border-blue-500/40 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      <span className="inline-flex items-center gap-1 bg-blue-950/80 text-blue-400 border border-blue-500/40 text-[10px] font-bold px-3 py-1 rounded-full">
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                        Used (Moves at 00:00)
+                        <span>USED</span>
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      <span className="inline-flex items-center gap-1 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 text-[10px] font-bold px-3 py-1 rounded-full">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        {ticket.status}
+                        <span>{ticket.status}</span>
                       </span>
                     )}
                   </div>
                 </div>
 
-                {/* Main Ticket Info */}
-                <div className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-lg font-bold text-white tracking-tight group-hover:text-yellow-300 transition-colors">
+                {/* Main Ticket Info Content */}
+                <div className="p-5 space-y-4">
+                  {/* Event Name & Price Row */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="text-lg sm:text-xl font-black text-white tracking-tight group-hover:text-yellow-300 transition-colors leading-snug">
                         {ticket.eventTitle || ticket.eventName}
                       </h3>
-                      <p className="text-[11px] font-mono text-[#FACC15] mt-0.5">
-                        {ticket.attendeeName || ticket.customerName}
-                        {(ticket.attendeePhone || ticket.customerPhone) &&
-                          ` • ${maskPhoneNumber(ticket.attendeePhone || ticket.customerPhone || '')}`}
+                      <p className="text-xs text-gray-300 font-semibold mt-1 flex items-center gap-1.5">
+                        <span className="text-white font-bold">{ticket.attendeeName || ticket.customerName}</span>
+                        {(ticket.attendeePhone || ticket.customerPhone) && (
+                          <>
+                            <span className="text-gray-500">•</span>
+                            <span className="font-mono text-gray-300">{maskPhoneNumber(ticket.attendeePhone || ticket.customerPhone || '')}</span>
+                          </>
+                        )}
                       </p>
-                      <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
-                        <div className="flex items-center gap-1 text-gray-300">
-                          <Calendar className="w-3.5 h-3.5 text-[#FACC15]" />
-                          <span>{ticket.eventDate}</span>
-                        </div>
-                      </div>
-
-                      {/* Event Location - Prominently Visible on Ticket Card */}
-                      <div className="mt-2.5 inline-flex items-center gap-1.5 bg-[#FACC15]/10 border border-[#FACC15]/30 rounded-xl px-2.5 py-1 text-xs max-w-full">
-                        <MapPin className="w-3.5 h-3.5 text-[#FACC15] shrink-0" />
-                        <span className="text-[10px] text-[#FACC15] font-black uppercase tracking-wider shrink-0">
-                          Location:
-                        </span>
-                        <span className="text-xs font-black text-white truncate">
-                          {ticketLocation}
-                        </span>
-                      </div>
-
-                      {isTicketWaitingPayment(ticket) && (
-                        <div className="mt-2 bg-amber-950/50 border border-amber-500/40 rounded-xl px-2.5 py-2 text-[11px] font-bold text-amber-300">
-                          {ticket.payshapRequestSent
-                            ? 'Request Sent - Waiting for customer to approve in their bank app'
-                            : 'WAITING FOR PAYMENT · Approve PayShap request or transfer to confirm'}
-                        </div>
-                      )}
-
-                      {/* MODE 2: EVENT FOOD PRE-ORDER BADGE / UNLOCK BUTTON */}
-                      {!isBilled && (
-                        <div className="mt-2.5">
-                          {ticket.hasFoodPreorder || ticket.preorderSummary ? (
-                            <div className="bg-purple-950/60 border border-purple-500/40 rounded-xl p-2 text-[11px] flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <Utensils className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                                <span className="text-white font-bold truncate">
-                                  Food Pre-Ordered: {ticket.preorderSummary}
-                                </span>
-                              </div>
-                              <span className="text-[9px] font-black uppercase bg-emerald-500 text-black px-1.5 py-0.2 rounded shrink-0">
-                                Paid
-                              </span>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const ev = events.find((item) => item.id === ticket.eventId) || {
-                                  id: ticket.eventId || 'evt_1',
-                                  title: ticket.eventTitle || 'Event',
-                                  date: ticket.eventDate || 'Event Day',
-                                  location: ticketLocation,
-                                  price: ticket.price || 'R0',
-                                  imageUrl: '',
-                                  status: 'Open',
-                                  category: 'Events',
-                                  storeId: ticket.storeId || '',
-                                };
-                                openEventFoodPreorder(ev as any);
-                              }}
-                              className="w-full py-2.5 px-3 bg-gradient-to-r from-[#FACC15] via-amber-400 to-yellow-500 hover:brightness-110 active:scale-95 text-black font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer border border-yellow-300"
-                            >
-                              <Utensils className="w-3.5 h-3.5 text-black stroke-[2.5]" />
-                              <span>Pre-Order Food & Menu 🍔🥤</span>
-                            </button>
-                          )}
-                        </div>
-                      )}
                     </div>
-                    <span className="text-[#FACC15] font-black text-base shrink-0">
+                    <span className="text-base sm:text-lg font-black text-[#FACC15] shrink-0 tabular-nums">
                       {ticket.price}
                     </span>
                   </div>
 
-                  {/* Billed itemized tag if migrated */}
+                  {/* Date & Location Rows */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center gap-2 text-xs text-gray-300">
+                      <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0 text-[#FACC15]">
+                        <Calendar className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="font-medium text-white">{ticket.eventDate || 'Event Day'}</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-gray-300 min-w-0">
+                      <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0 text-[#FACC15]">
+                        <MapPin className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="font-medium text-white truncate">{ticketLocation}</span>
+                    </div>
+                  </div>
+
+                  {/* Waiting Payment Info Bar */}
+                  {isTicketWaitingPayment(ticket) && (
+                    <div className="bg-amber-950/40 border border-amber-500/40 rounded-2xl px-3.5 py-2.5 text-xs font-semibold text-amber-300 flex items-center gap-2">
+                      <Clock className="w-4 h-4 shrink-0 text-amber-400" />
+                      <span className="leading-snug">
+                        {ticket.payshapRequestSent
+                          ? 'Request Sent - Waiting for customer approval in bank app'
+                          : 'Waiting for Payment · Approve PayShap or transfer to confirm'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Food Pre-Order Section */}
+                  {!isBilled && (
+                    <div>
+                      {ticket.hasFoodPreorder || ticket.preorderSummary ? (
+                        <div className="bg-purple-950/60 border border-purple-500/40 rounded-2xl p-3 text-xs flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Utensils className="w-4 h-4 text-purple-400 shrink-0" />
+                            <span className="text-white font-bold truncate">
+                              Food Pre-Ordered: {ticket.preorderSummary}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-black uppercase bg-emerald-500 text-black px-2 py-0.5 rounded-full shrink-0">
+                            Paid
+                          </span>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const ev = events.find((item) => item.id === ticket.eventId) || {
+                              id: ticket.eventId || 'evt_1',
+                              title: ticket.eventTitle || 'Event',
+                              date: ticket.eventDate || 'Event Day',
+                              location: ticketLocation,
+                              price: ticket.price || 'R0',
+                              imageUrl: '',
+                              status: 'Open',
+                              category: 'Events',
+                              storeId: ticket.storeId || '',
+                            };
+                            openEventFoodPreorder(ev as any);
+                          }}
+                          className="w-full min-h-[46px] bg-gradient-to-r from-[#FACC15] via-amber-400 to-yellow-500 hover:brightness-110 active:scale-[0.99] text-black font-black text-xs sm:text-sm rounded-2xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer border border-yellow-300 py-3"
+                        >
+                          <Utensils className="w-4 h-4 text-black stroke-[2.5]" />
+                          <span>Pre-Order Food & Menu 🍔🥤</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Billed Itemized Tag if migrated */}
                   {isBilled && (
-                    <div className="mt-3 p-2.5 rounded-xl bg-yellow-400/10 border border-yellow-400/20 flex items-center justify-between text-[11px]">
+                    <div className="p-3 rounded-2xl bg-yellow-400/10 border border-yellow-400/20 flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2 text-yellow-300">
-                        <Receipt className="w-3.5 h-3.5 text-[#FACC15]" />
+                        <Receipt className="w-4 h-4 text-[#FACC15]" />
                         <span>Moved to EveryCent Bill Ledger</span>
                       </div>
                       <button
@@ -334,39 +341,39 @@ export const TicketsPage: React.FC = () => {
                           e.stopPropagation();
                           navigateTo('/every-cent');
                         }}
-                        className="text-[10px] font-black text-[#FACC15] hover:text-white flex items-center gap-0.5 underline cursor-pointer"
+                        className="text-xs font-black text-[#FACC15] hover:text-white flex items-center gap-1 underline cursor-pointer"
                       >
                         <span>View Statement</span>
-                        <ArrowRight className="w-3 h-3" />
+                        <ArrowRight className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   )}
 
-                  {/* Perforated divider */}
+                  {/* Perforated / Dashed Divider Line */}
                   <div className="relative my-4 flex items-center">
-                    <div className="w-3 h-6 bg-[#0A0A0A] rounded-r-full -ml-4" />
-                    <div className="flex-1 border-t-2 border-dashed border-zinc-800 mx-2" />
-                    <div className="w-3 h-6 bg-[#0A0A0A] rounded-l-full -mr-4" />
+                    <div className="w-3.5 h-7 bg-[#0A0A0A] rounded-r-full -ml-5" />
+                    <div className="flex-1 border-t-2 border-dashed border-zinc-700/80 mx-2" />
+                    <div className="w-3.5 h-7 bg-[#0A0A0A] rounded-l-full -mr-5" />
                   </div>
 
-                  {/* Bottom pass actions */}
-                  <div className="flex items-center justify-between pt-1">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs">
+                  {/* Bottom Pass Actions */}
+                  <div className="flex items-center justify-between gap-3 pt-1 text-xs">
+                    <div className="flex items-center gap-2 text-gray-300 min-w-0">
                       {isBilled ? (
-                        <span className="text-[11px] font-medium text-yellow-500/80">
+                        <span className="font-medium text-yellow-500/90">
                           Settled Financial Receipt
                         </span>
                       ) : (
                         <>
-                          <Radio className="w-3.5 h-3.5 text-[#FACC15] animate-pulse" />
-                          <span className="text-[11px] font-medium">
+                          <Radio className="w-4 h-4 text-[#FACC15] animate-pulse shrink-0" />
+                          <span className="font-semibold text-gray-200 truncate">
                             NFC Band Linked • Tap at Gate
                           </span>
                         </>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-1 text-xs font-bold text-[#FACC15] group-hover:translate-x-0.5 transition-transform">
+                    <div className="flex items-center gap-1.5 font-bold text-[#FACC15] group-hover:translate-x-0.5 transition-transform shrink-0">
                       <TicketIcon className="w-4 h-4" />
                       <span>{isBilled ? 'View Receipt' : 'View Pass · Use Profile QR'}</span>
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -381,3 +388,5 @@ export const TicketsPage: React.FC = () => {
     </div>
   );
 };
+
+export default TicketsPage;

@@ -1,18 +1,13 @@
 package com.universalband.mall;
 
 import android.Manifest;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.provider.Telephony;
 import android.telephony.SmsMessage;
-import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -30,22 +25,23 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Background Android BroadcastReceiver that automatically inspects incoming SMS messages
- * even when the Universal Band app is closed or running in the background.
+ * Background Android BroadcastReceiver that listens for REAL incoming GoTyme / TymeBank payment SMS.
  *
- * Only runs when Admin Payment Confirmation is enabled on this device, and only marks
- * matching orders/tickets PAID when BOTH the configured Bank Message keyword AND an order
- * reference (matching Reference Format, e.g. UB-1234) are detected.
+ * CRITICAL REQUIREMENTS:
+ * 1. REAL SMS LISTENER in background (even when app is closed / killed).
+ * 2. Triggers ONLY when SMS is from GoTyme Bank / TymeBank AND contains "You received" and "from".
+ * 3. Triggers for ANY amount (R1, R5, R10, R20, R50, R100, R500, R1000, ANY amount).
+ * 4. Starts LOUD LOOPING ALARM SONG via PaymentAlarmService (loops until user presses STOP).
+ * 5. MANUAL APPROVAL ONLY: Does NOT auto-approve tickets or orders. Ticket stays WAITING FOR PAYMENT.
  */
 public class SmsPaymentReceiver extends BroadcastReceiver {
 
     public static final String PREFS_NAME = "UbLivePaymentPrefs";
+    public static final String ACTION_PAYMENT_ALARM_TRIGGERED = "com.universalband.mall.PAYMENT_ALARM_TRIGGERED";
     public static final String ACTION_LIVE_PAYMENT_SMS = "com.universalband.mall.LIVE_PAYMENT_SMS";
-    private static final String CHANNEL_ID = "ub_live_payments";
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
 
     @Override
@@ -63,13 +59,6 @@ public class SmsPaymentReceiver extends BroadcastReceiver {
             Manifest.permission.RECEIVE_SMS
         ) == PackageManager.PERMISSION_GRANTED;
         if (!readGranted && !receiveGranted) {
-            return;
-        }
-
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        boolean enabled = prefs.getBoolean("enabled", true);
-        boolean isAdminDevice = prefs.getBoolean("isAdminDevice", false);
-        if (!enabled || !isAdminDevice) {
             return;
         }
 
@@ -103,174 +92,138 @@ public class SmsPaymentReceiver extends BroadcastReceiver {
             return;
         }
 
-        String bankMessage = prefs.getString("bankMessage", "TymeBank");
-        String referenceFormat = prefs.getString("referenceFormat", "UB-");
-        if (bankMessage == null || bankMessage.trim().isEmpty()) bankMessage = "TymeBank";
-        if (referenceFormat == null || referenceFormat.trim().isEmpty()) referenceFormat = "UB-";
-
-        String matchedBankWord = findMatchingBankKeyword(finalSender + " " + finalBody, bankMessage);
-        if (matchedBankWord == null) {
+        // Check if this is a REAL GoTyme / TymeBank incoming payment SMS
+        if (!isTymeBankPaymentSms(finalSender, finalBody)) {
             return;
         }
 
-        String matchedReference = extractOrderReference(finalBody, referenceFormat);
-        if (matchedReference == null) {
-            return;
-        }
+        // Extract REAL amount and REAL sender name from the real SMS (ANY AMOUNT: R1, R5, R50, R100, etc.)
+        final String parsedAmount = extractPaymentAmount(finalBody);
+        final String parsedCustomer = extractPaymentSender(finalBody);
+        final String isoNow = formatIsoUtc(finalTimestamp);
 
-        // Notify in-process Capacitor plugin immediately if app WebView is alive
-        Intent internalIntent = new Intent(ACTION_LIVE_PAYMENT_SMS);
+        // 1. Immediately START the LOUD LOOPING ALARM foreground service with persistent Heads-up notification!
+        PaymentAlarmService.startAlarm(context.getApplicationContext(), parsedAmount, parsedCustomer, finalBody);
+
+        // 2. Broadcast internal intent to notify in-app Capacitor WebView if app is in foreground
+        Intent internalIntent = new Intent(ACTION_PAYMENT_ALARM_TRIGGERED);
         internalIntent.setPackage(context.getPackageName());
-        internalIntent.putExtra("id", "bg_" + finalTimestamp + "_" + finalSender);
+        internalIntent.putExtra("id", "live_payment_" + finalTimestamp);
+        internalIntent.putExtra("amount", parsedAmount);
+        internalIntent.putExtra("customer", parsedCustomer);
         internalIntent.putExtra("sender", finalSender);
         internalIntent.putExtra("body", finalBody);
         internalIntent.putExtra("dateMs", finalTimestamp);
         context.sendBroadcast(internalIntent);
 
+        // Also notify standard SMS listener
+        Intent smsIntent = new Intent(ACTION_LIVE_PAYMENT_SMS);
+        smsIntent.setPackage(context.getPackageName());
+        smsIntent.putExtra("id", "live_" + finalTimestamp);
+        smsIntent.putExtra("sender", finalSender);
+        smsIntent.putExtra("body", finalBody);
+        smsIntent.putExtra("dateMs", finalTimestamp);
+        context.sendBroadcast(smsIntent);
+
+        // 3. Persist payment alert telemetry in native SharedPreferences
+        final Context appCtx = context.getApplicationContext();
+        SharedPreferences.Editor editor = appCtx
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit();
+        editor.putString("lastPaymentSmsText", finalBody);
+        editor.putString("lastPaymentSmsSender", parsedCustomer.isEmpty() ? finalSender : parsedCustomer);
+        editor.putString("lastPaymentAmount", parsedAmount);
+        editor.putString("lastPaymentSmsAt", isoNow);
+        editor.putBoolean("alarmActive", true);
+        editor.apply();
+
+        // 4. Update Firestore telemetry asynchronously (CRITICAL: DO NOT AUTO-APPROVE TICKETS. MANUAL ONLY)
+        SharedPreferences prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         final String projectId = prefs.getString("projectId", "");
         final String databaseId = prefs.getString("databaseId", "(default)");
         final String apiKey = prefs.getString("apiKey", "");
         final String refreshToken = prefs.getString("refreshToken", "");
 
-        if (projectId == null || projectId.trim().isEmpty()) {
-            return;
+        if (projectId != null && !projectId.trim().isEmpty() && apiKey != null && !apiKey.trim().isEmpty()) {
+            final PendingResult pendingResult = goAsync();
+            EXECUTOR.execute(() -> {
+                try {
+                    String idToken = refreshIdToken(apiKey, refreshToken);
+                    updatePayshapTelemetryInFirestore(
+                        projectId,
+                        databaseId,
+                        apiKey,
+                        idToken,
+                        finalBody,
+                        parsedCustomer.isEmpty() ? finalSender : parsedCustomer,
+                        parsedAmount,
+                        isoNow
+                    );
+                } catch (Exception ignored) {
+                } finally {
+                    if (pendingResult != null) {
+                        pendingResult.finish();
+                    }
+                }
+            });
         }
-
-        final PendingResult pendingResult = goAsync();
-        final Context appCtx = context.getApplicationContext();
-        final String refUpper = matchedReference.toUpperCase(Locale.ROOT);
-
-        EXECUTOR.execute(() -> {
-            try {
-                String isoNow = formatIsoUtc(finalTimestamp);
-                String idToken = refreshIdToken(apiKey, refreshToken);
-
-                boolean confirmedOrderOrTicket = false;
-                String confirmedRef = refUpper;
-
-                // 1. Check direct ticket document ID (e.g. tickets/UB-12345)
-                JSONObject directTicket = getFirestoreDoc(
-                    projectId, databaseId, apiKey, idToken, "tickets/" + urlEncode(refUpper)
-                );
-                if (directTicket != null && !isDocAlreadyPaid(directTicket)) {
-                    confirmedOrderOrTicket = markTicketPaidInFirestore(
-                        projectId, databaseId, apiKey, idToken, refUpper, refUpper, finalBody, isoNow
-                    );
-                }
-
-                // 2. Fallback query on tickets (ticketId / bandCode / payshapReference)
-                if (!confirmedOrderOrTicket) {
-                    String foundTicketDocId = queryDocIdByField(
-                        projectId, databaseId, apiKey, idToken, "tickets", "ticketId", refUpper
-                    );
-                    if (foundTicketDocId == null) {
-                        foundTicketDocId = queryDocIdByField(
-                            projectId, databaseId, apiKey, idToken, "tickets", "bandCode", refUpper
-                        );
-                    }
-                    if (foundTicketDocId == null) {
-                        foundTicketDocId = queryDocIdByField(
-                            projectId, databaseId, apiKey, idToken, "tickets", "payshapReference", matchedReference
-                        );
-                    }
-                    if (foundTicketDocId != null) {
-                        JSONObject ticketDoc = getFirestoreDoc(
-                            projectId, databaseId, apiKey, idToken, "tickets/" + urlEncode(foundTicketDocId)
-                        );
-                        if (ticketDoc != null && !isDocAlreadyPaid(ticketDoc)) {
-                            confirmedOrderOrTicket = markTicketPaidInFirestore(
-                                projectId, databaseId, apiKey, idToken, foundTicketDocId, refUpper, finalBody, isoNow
-                            );
-                        }
-                    }
-                }
-
-                // 3. Fallback query on mall_orders (orderNumber / collectionCode)
-                if (!confirmedOrderOrTicket) {
-                    String foundOrderDocId = queryDocIdByField(
-                        projectId, databaseId, apiKey, idToken, "mall_orders", "orderNumber", refUpper
-                    );
-                    if (foundOrderDocId == null) {
-                        foundOrderDocId = queryDocIdByField(
-                            projectId, databaseId, apiKey, idToken, "mall_orders", "collectionCode", refUpper
-                        );
-                    }
-                    if (foundOrderDocId != null) {
-                        JSONObject orderDoc = getFirestoreDoc(
-                            projectId, databaseId, apiKey, idToken, "mall_orders/" + urlEncode(foundOrderDocId)
-                        );
-                        if (orderDoc != null && !isMallOrderAlreadyPaid(orderDoc)) {
-                            confirmedOrderOrTicket = markMallOrderPaidInFirestore(
-                                projectId, databaseId, apiKey, idToken, foundOrderDocId, refUpper, finalBody, isoNow
-                            );
-                        }
-                    }
-                }
-
-                // 4. Persist live payment telemetry so Admin Live Payments reflects immediately
-                SharedPreferences.Editor editor = appCtx
-                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .edit();
-                editor.putString("lastPaymentSmsText", finalBody);
-                editor.putString("lastPaymentSmsSender", finalSender);
-                editor.putString("lastPaymentSmsAt", isoNow);
-                if (confirmedOrderOrTicket) {
-                    editor.putString("lastConfirmedReference", confirmedRef);
-                }
-                editor.apply();
-
-                updatePayshapTelemetryInFirestore(
-                    projectId,
-                    databaseId,
-                    apiKey,
-                    idToken,
-                    finalBody,
-                    finalSender,
-                    isoNow,
-                    confirmedOrderOrTicket ? confirmedRef : null
-                );
-
-                if (confirmedOrderOrTicket) {
-                    showBackgroundNotification(
-                        appCtx,
-                        "Payment Confirmed (" + confirmedRef + ")",
-                        "Marked PAID automatically from " + matchedBankWord + " SMS."
-                    );
-                }
-            } catch (Exception ignored) {
-            } finally {
-                if (pendingResult != null) {
-                    pendingResult.finish();
-                }
-            }
-        });
     }
 
-    public static String findMatchingBankKeyword(String haystack, String bankMessageSetting) {
-        if (haystack == null || bankMessageSetting == null) return null;
-        String lowerHaystack = haystack.toLowerCase(Locale.ROOT);
-        String[] parts = bankMessageSetting.split("[,\\n]+");
-        for (String raw : parts) {
-            String term = raw.trim();
-            if (!term.isEmpty() && lowerHaystack.contains(term.toLowerCase(Locale.ROOT))) {
-                return term;
-            }
-        }
-        return null;
+    /**
+     * Checks if SMS is from GoTyme Bank / TymeBank AND contains "You received" and "from".
+     * Triggers for ANY amount.
+     */
+    public static boolean isTymeBankPaymentSms(String sender, String body) {
+        if (body == null || body.trim().isEmpty()) return false;
+        String haystack = ((sender != null ? sender : "") + " " + body).toLowerCase(Locale.ROOT);
+
+        boolean isTymeBank = haystack.contains("gotyme") ||
+                             haystack.contains("tymebank") ||
+                             haystack.contains("tyme bank") ||
+                             haystack.contains("tyme");
+
+        boolean hasReceived = haystack.contains("you received");
+        boolean hasFrom = haystack.contains("from");
+
+        return isTymeBank && hasReceived && hasFrom;
     }
 
-    public static String extractOrderReference(String smsBody, String referenceFormat) {
-        if (smsBody == null || referenceFormat == null) return null;
-        String cleanPrefix = referenceFormat.trim();
-        if (cleanPrefix.isEmpty()) return null;
+    /**
+     * Extracts ANY amount from SMS: e.g. "R1.00", "R1", "R50.00", "R100", "R1,000.00".
+     */
+    public static String extractPaymentAmount(String body) {
+        if (body == null) return "Payment";
+        // Pattern 1: "You received R1.00" or "You received R 1.00" or "You received R50"
+        Pattern p1 = Pattern.compile("received\\s+([A-Za-z$€£]*\\s*[\\d,.]+)", Pattern.CASE_INSENSITIVE);
+        Matcher m1 = p1.matcher(body);
+        if (m1.find()) {
+            String val = m1.group(1).trim();
+            if (!val.isEmpty()) return val;
+        }
 
-        String escaped = Pattern.quote(cleanPrefix);
-        Pattern p = Pattern.compile("(?:^|[^A-Za-z0-9])(" + escaped + "[A-Za-z0-9_-]+)", Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(smsBody);
+        // Pattern 2: Fallback search for any "R123.45" or "R123"
+        Pattern p2 = Pattern.compile("(R\\s*[\\d,.]+)", Pattern.CASE_INSENSITIVE);
+        Matcher m2 = p2.matcher(body);
+        if (m2.find()) {
+            String val = m2.group(1).trim();
+            if (!val.isEmpty()) return val;
+        }
+
+        return "Payment";
+    }
+
+    /**
+     * Extracts REAL sender name from SMS: e.g. "from T. PHOKWANE." -> "T. PHOKWANE".
+     */
+    public static String extractPaymentSender(String body) {
+        if (body == null) return "Customer";
+        Pattern p = Pattern.compile("from\\s+([^.]+?)(?:\\.|\\s+Your available|\\s+Your balance|\\s+Ref|\\s+Available|$)", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(body);
         if (m.find()) {
-            return m.group(1).trim();
+            String name = m.group(1).trim();
+            if (!name.isEmpty()) return name;
         }
-        return null;
+        return "Customer";
     }
 
     private static String formatIsoUtc(long millis) {
@@ -339,150 +292,6 @@ public class SmsPaymentReceiver extends BroadcastReceiver {
         return null;
     }
 
-    private static JSONObject getFirestoreDoc(
-        String projectId, String databaseId, String apiKey, String idToken, String docPath
-    ) {
-        HttpURLConnection conn = null;
-        try {
-            URL url = new URL(buildDocUrl(projectId, databaseId, apiKey, docPath, null));
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(8000);
-            if (idToken != null && !idToken.isEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer " + idToken);
-            }
-            if (conn.getResponseCode() == 200) {
-                return new JSONObject(readAll(conn.getInputStream()));
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
-        return null;
-    }
-
-    private static String queryDocIdByField(
-        String projectId,
-        String databaseId,
-        String apiKey,
-        String idToken,
-        String collectionId,
-        String fieldPath,
-        String value
-    ) {
-        HttpURLConnection conn = null;
-        try {
-            URL url = new URL(buildDocUrl(projectId, databaseId, apiKey, ":runQuery", null));
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(8000);
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-            if (idToken != null && !idToken.isEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer " + idToken);
-            }
-
-            JSONObject payload = new JSONObject()
-                .put("structuredQuery", new JSONObject()
-                    .put("from", new JSONArray().put(new JSONObject().put("collectionId", collectionId)))
-                    .put("where", new JSONObject()
-                        .put("fieldFilter", new JSONObject()
-                            .put("field", new JSONObject().put("fieldPath", fieldPath))
-                            .put("op", "EQUAL")
-                            .put("value", new JSONObject().put("stringValue", value))))
-                    .put("limit", 1));
-
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(payload.toString().getBytes(StandardCharsets.UTF_8));
-            }
-            if (conn.getResponseCode() == 200) {
-                JSONArray arr = new JSONArray(readAll(conn.getInputStream()));
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject item = arr.optJSONObject(i);
-                    if (item != null && item.has("document")) {
-                        String fullName = item.getJSONObject("document").optString("name", "");
-                        int slash = fullName.lastIndexOf('/');
-                        if (slash >= 0 && slash + 1 < fullName.length()) {
-                            return fullName.substring(slash + 1);
-                        }
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
-        return null;
-    }
-
-    private static boolean isDocAlreadyPaid(JSONObject docJson) {
-        JSONObject fields = docJson.optJSONObject("fields");
-        if (fields == null) return false;
-        JSONObject ps = fields.optJSONObject("paymentStatus");
-        String statusVal = ps != null ? ps.optString("stringValue", "") : "";
-        return "PAID".equalsIgnoreCase(statusVal) || "VERIFIED".equalsIgnoreCase(statusVal);
-    }
-
-    private static boolean isMallOrderAlreadyPaid(JSONObject docJson) {
-        if (isDocAlreadyPaid(docJson)) return true;
-        JSONObject fields = docJson.optJSONObject("fields");
-        if (fields == null) return false;
-        JSONObject st = fields.optJSONObject("status");
-        String statusVal = st != null ? st.optString("stringValue", "") : "";
-        return "paid".equalsIgnoreCase(statusVal)
-            || "collected".equalsIgnoreCase(statusVal)
-            || "delivered".equalsIgnoreCase(statusVal);
-    }
-
-    private static boolean markTicketPaidInFirestore(
-        String projectId,
-        String databaseId,
-        String apiKey,
-        String idToken,
-        String docId,
-        String refText,
-        String smsBody,
-        String isoNow
-    ) {
-        try {
-            JSONObject fields = new JSONObject()
-                .put("paymentStatus", new JSONObject().put("stringValue", "PAID"))
-                .put("paidAt", new JSONObject().put("stringValue", isoNow))
-                .put("payshapReference", new JSONObject().put("stringValue", refText))
-                .put("verifiedSmsText", new JSONObject().put("stringValue", smsBody));
-            String mask = "updateMask.fieldPaths=paymentStatus&updateMask.fieldPaths=paidAt&updateMask.fieldPaths=payshapReference&updateMask.fieldPaths=verifiedSmsText";
-            return patchFirestoreDoc(projectId, databaseId, apiKey, idToken, "tickets/" + urlEncode(docId), mask, fields);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean markMallOrderPaidInFirestore(
-        String projectId,
-        String databaseId,
-        String apiKey,
-        String idToken,
-        String docId,
-        String refText,
-        String smsBody,
-        String isoNow
-    ) {
-        try {
-            JSONObject fields = new JSONObject()
-                .put("status", new JSONObject().put("stringValue", "paid"))
-                .put("paymentStatus", new JSONObject().put("stringValue", "PAID"))
-                .put("paidAt", new JSONObject().put("stringValue", isoNow))
-                .put("payshapReference", new JSONObject().put("stringValue", refText))
-                .put("verifiedSmsText", new JSONObject().put("stringValue", smsBody));
-            String mask = "updateMask.fieldPaths=status&updateMask.fieldPaths=paymentStatus&updateMask.fieldPaths=paidAt&updateMask.fieldPaths=payshapReference&updateMask.fieldPaths=verifiedSmsText";
-            return patchFirestoreDoc(projectId, databaseId, apiKey, idToken, "mall_orders/" + urlEncode(docId), mask, fields);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     private static void updatePayshapTelemetryInFirestore(
         String projectId,
         String databaseId,
@@ -490,23 +299,20 @@ public class SmsPaymentReceiver extends BroadcastReceiver {
         String idToken,
         String smsBody,
         String sender,
-        String isoNow,
-        String confirmedRef
+        String amount,
+        String isoNow
     ) {
         try {
             JSONObject fields = new JSONObject()
                 .put("lastPaymentSmsText", new JSONObject().put("stringValue", smsBody))
                 .put("lastPaymentSmsSender", new JSONObject().put("stringValue", sender))
+                .put("lastPaymentAmount", new JSONObject().put("stringValue", amount))
                 .put("lastPaymentSmsAt", new JSONObject().put("stringValue", isoNow))
+                .put("alarmActive", new JSONObject().put("booleanValue", true))
                 .put("updatedAt", new JSONObject().put("stringValue", isoNow));
-            StringBuilder mask = new StringBuilder(
-                "updateMask.fieldPaths=lastPaymentSmsText&updateMask.fieldPaths=lastPaymentSmsSender&updateMask.fieldPaths=lastPaymentSmsAt&updateMask.fieldPaths=updatedAt"
-            );
-            if (confirmedRef != null && !confirmedRef.isEmpty()) {
-                fields.put("lastConfirmedReference", new JSONObject().put("stringValue", confirmedRef));
-                mask.append("&updateMask.fieldPaths=lastConfirmedReference");
-            }
-            patchFirestoreDoc(projectId, databaseId, apiKey, idToken, "settings/payshap", mask.toString(), fields);
+
+            String mask = "updateMask.fieldPaths=lastPaymentSmsText&updateMask.fieldPaths=lastPaymentSmsSender&updateMask.fieldPaths=lastPaymentAmount&updateMask.fieldPaths=lastPaymentSmsAt&updateMask.fieldPaths=alarmActive&updateMask.fieldPaths=updatedAt";
+            patchFirestoreDoc(projectId, databaseId, apiKey, idToken, "settings/payshap", mask, fields);
         } catch (Exception ignored) {
         }
     }
@@ -557,52 +363,6 @@ public class SmsPaymentReceiver extends BroadcastReceiver {
             return sb.toString();
         } catch (Exception e) {
             return "";
-        }
-    }
-
-    private static void showBackgroundNotification(Context ctx, String title, String message) {
-        try {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                ContextCompat.checkSelfPermission(ctx, "android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return;
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Live Payment Confirmations",
-                    NotificationManager.IMPORTANCE_HIGH
-                );
-                channel.enableVibration(true);
-                nm.createNotificationChannel(channel);
-            }
-
-            Intent launchIntent = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
-            PendingIntent contentIntent = null;
-            if (launchIntent != null) {
-                contentIntent = PendingIntent.getActivity(
-                    ctx,
-                    1001,
-                    launchIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-                );
-            }
-
-            NotificationCompat.Builder builder = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_notify_chat)
-                .setContentTitle(title)
-                .setContentText(message)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true);
-
-            if (contentIntent != null) {
-                builder.setContentIntent(contentIntent);
-            }
-
-            nm.notify((int) (System.currentTimeMillis() % 100000), builder.build());
-        } catch (Exception ignored) {
         }
     }
 }

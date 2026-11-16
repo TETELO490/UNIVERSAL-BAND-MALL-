@@ -93,7 +93,11 @@ export const StoresPage: React.FC = () => {
   );
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isAdmin = roleLower === 'admin' || localStorage.getItem('ub_admin_session') === 'true';
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+  const isAdmin = has5LocksPassed && (roleLower === 'admin' || localStorage.getItem('ub_admin_session') === 'true');
   const isPromoter = roleLower === 'promoter' || roleLower === 'event organiser';
 
   // Available upcoming events (filter out expired: events before today disappear from discovery)

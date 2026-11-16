@@ -39,10 +39,16 @@ export const AddEventModal: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isAdmin =
-    roleLower === 'admin' ||
-    isAuthorizedAdminEmail(currentUser?.email) ||
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
     localStorage.getItem('ub_admin_session') === 'true';
+
+  const isAdmin =
+    has5LocksPassed &&
+    (roleLower === 'admin' ||
+      isAuthorizedAdminEmail(currentUser?.email) ||
+      localStorage.getItem('ub_admin_session') === 'true');
 
   const isEditing = Boolean(editingEvent);
 

@@ -41,7 +41,8 @@ export const AdminPayshapSettingsPage: React.FC = () => {
     supportRingEnabled,
     setSupportRingEnabled,
     smsPermissionActive,
-    lastConfirmedReference,
+    lastPaymentAmount,
+    testPaymentAlarm,
     navigateTo,
     setActiveModal,
   } = useApp();
@@ -53,8 +54,14 @@ export const AdminPayshapSettingsPage: React.FC = () => {
   );
 
   const roleLower = (currentUser?.role || '').toLowerCase();
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+
   const isAdmin =
     isUserLoggedIn &&
+    has5LocksPassed &&
     (roleLower === 'admin' ||
       isAuthorizedAdminEmail(currentUser?.email) ||
       localStorage.getItem('ub_admin_session') === 'true');
@@ -157,8 +164,7 @@ export const AdminPayshapSettingsPage: React.FC = () => {
 
   const handleTestSound = async () => {
     setSoundErrorMsg(null);
-    await unlockAdminAudio();
-    playNewOrderSound(draftSound);
+    await testPaymentAlarm(draftSound);
   };
 
   const handleSaveSound = async () => {
@@ -168,9 +174,9 @@ export const AdminPayshapSettingsPage: React.FC = () => {
     try {
       await unlockAdminAudio();
       await updateNewOrderSound(draftSound);
-      setSoundSuccessMsg('New Order Sound saved! Admin will hear this whenever a WAITING FOR PAYMENT ticket arrives.');
+      setSoundSuccessMsg('Payment Alarm sound saved! It will ring continuously when a GoTyme / TymeBank payment SMS arrives.');
     } catch {
-      setSoundErrorMsg('Could not save New Order Sound. Please try again.');
+      setSoundErrorMsg('Could not save Payment Alarm sound. Please try again.');
     } finally {
       setSoundSaving(false);
     }
@@ -301,16 +307,16 @@ export const AdminPayshapSettingsPage: React.FC = () => {
         </button>
       </form>
 
-      {/* LIVE PAYMENT CONFIRMATION SECTION */}
+      {/* PAYMENT APPROVAL & LIVE ALARMS SECTION */}
       <div className="bg-[#1A1A1A] border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-xl">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-extrabold text-white flex items-center gap-2">
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
-              <span>Payment Confirmation (LIVE)</span>
+              <span>Payment Approval &amp; Alarms</span>
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Automatic background SMS reading for real customers.
+              Background SMS alarm for GoTyme / TymeBank payments — manual admin approval only.
             </p>
           </div>
           <span
@@ -326,12 +332,12 @@ export const AdminPayshapSettingsPage: React.FC = () => {
 
         <div className="bg-black/50 border border-white/10 rounded-xl p-3.5 space-y-2 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-gray-400">Background Checking:</span>
-            <span className="font-bold text-emerald-400">ALWAYS ON (Background Mode)</span>
+            <span className="text-gray-400">SMS Alarm Listener:</span>
+            <span className="font-bold text-emerald-400">ALWAYS ON (Any Amount)</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-gray-400">Last SMS Confirmed:</span>
-            <span className="font-mono text-[#FACC15]">{lastConfirmedReference || 'None yet'}</span>
+            <span className="text-gray-400">Last Payment SMS Amount:</span>
+            <span className="font-mono text-[#FACC15]">{lastPaymentAmount || 'None yet'}</span>
           </div>
         </div>
 
@@ -341,20 +347,20 @@ export const AdminPayshapSettingsPage: React.FC = () => {
           className="w-full min-h-[48px] bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition cursor-pointer"
         >
           <Smartphone className="w-4 h-4" />
-          <span>OPEN LIVE PAYMENTS SCREEN</span>
+          <span>OPEN PAYMENT APPROVAL</span>
         </button>
       </div>
 
-      {/* NEW ORDER SOUND SECTION */}
+      {/* PAYMENT ALARM SOUND & VOLUME SECTION */}
       <div className="bg-[#1A1A1A] border border-white/10 rounded-2xl p-5 space-y-4 shadow-xl">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-extrabold text-white flex items-center gap-2">
               <Volume2 className="w-4 h-4 text-[#FACC15]" />
-              <span>New Order Sound</span>
+              <span>Payment Alarm Sound &amp; Volume</span>
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Plays immediately when a customer buys a ticket (WAITING FOR PAYMENT).
+              Rings continuously when a GoTyme / TymeBank payment SMS arrives until stopped.
             </p>
           </div>
           <Music className="w-5 h-5 text-[#FACC15] shrink-0" />
@@ -363,7 +369,7 @@ export const AdminPayshapSettingsPage: React.FC = () => {
         <div className="bg-black/50 border border-[#FACC15]/30 rounded-xl p-3 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
-              Selected Ringtone / Music
+              Selected Alarm Sound
             </span>
             <span className="text-sm font-bold text-[#FACC15] truncate block">
               {activeSoundLabel}
@@ -375,7 +381,7 @@ export const AdminPayshapSettingsPage: React.FC = () => {
             className="min-h-[44px] px-3.5 py-2 bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs rounded-xl flex items-center gap-1.5 shrink-0 cursor-pointer"
           >
             <Play className="w-3.5 h-3.5 fill-black" />
-            <span>Test Sound</span>
+            <span>TEST ALARM</span>
           </button>
         </div>
 
@@ -553,7 +559,7 @@ export const AdminPayshapSettingsPage: React.FC = () => {
           className="w-full min-h-[48px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black font-black text-sm rounded-xl flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-50"
         >
           <Save className="w-4 h-4 stroke-[2.5]" />
-          <span>{soundSaving ? 'SAVING SOUND...' : 'SAVE NEW ORDER SOUND'}</span>
+          <span>{soundSaving ? 'SAVING ALARM...' : 'SAVE PAYMENT ALARM'}</span>
         </button>
       </div>
 
@@ -600,12 +606,12 @@ export const AdminPayshapSettingsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* TymeBank SMS Auto-Confirm Shortcut */}
+      {/* Payment SMS Listener & Alert Log Shortcut */}
       <div className="bg-[#141414] border border-white/10 rounded-2xl p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-bold text-white">TymeBank SMS Auto-Confirm</p>
+          <p className="text-xs font-bold text-white">GoTyme / TymeBank SMS Listener</p>
           <p className="text-[11px] text-gray-400 mt-0.5">
-            Manage SMS read permission and incoming payment logs
+            Manage SMS permission and incoming bank payment SMS log
           </p>
         </div>
         <button

@@ -57,39 +57,8 @@ export const BuyTicketModal: React.FC = () => {
   const ticketStats = useMemo(() => getEventTicketStats(liveEvent, tickets), [liveEvent, tickets]);
 
   const availableTiers = useMemo(() => {
-    if (!liveEvent) return [];
-    const list: { id: string; name: string; shortName: string; price: number; formattedPrice: string; badge: string }[] = [];
-
-    const eb = parseFloat(String(liveEvent.earlyBirdPrice || '').replace(/[^0-9.]/g, ''));
-    if (eb && eb > 0) {
-      list.push({ id: 'early_bird', name: 'Early Bird Pass', shortName: 'EARLYBIRD', price: eb, formattedPrice: `R${eb}`, badge: '🌅 EARLY BIRD' });
-    }
-
-    const gen =
-      parseFloat(String(liveEvent.generalPrice || '').replace(/[^0-9.]/g, '')) ||
-      parseFloat(String(liveEvent.price || '').replace(/[^0-9.]/g, '')) ||
-      0;
-    if (gen > 0) {
-      list.push({ id: 'general', name: 'General Admission', shortName: 'GENERAL', price: gen, formattedPrice: `R${gen}`, badge: '🎟️ GENERAL' });
-    }
-
-    const vip = parseFloat(String(liveEvent.vipPrice || '').replace(/[^0-9.]/g, ''));
-    if (vip && vip > 0) {
-      list.push({ id: 'vip', name: 'VIP Pass', shortName: 'VIP', price: vip, formattedPrice: `R${vip}`, badge: '⭐ VIP' });
-    }
-
-    const kids = parseFloat(String(liveEvent.kidsPrice || '').replace(/[^0-9.]/g, ''));
-    if (kids && kids > 0) {
-      list.push({ id: 'kids', name: 'Kids Pass', shortName: 'KIDS', price: kids, formattedPrice: `R${kids}`, badge: '👶 KIDS' });
-    }
-
-    const vvip = parseFloat(String(liveEvent.vvipPrice || '').replace(/[^0-9.]/g, ''));
-    if (vvip && vvip > 0) {
-      list.push({ id: 'vvip', name: 'VVIP Pass', shortName: 'VVIP', price: vvip, formattedPrice: `R${vvip}`, badge: '👑 VVIP' });
-    }
-
-    return list;
-  }, [liveEvent]);
+    return ticketStats.availableTiers;
+  }, [ticketStats]);
 
   const [selectedTierId, setSelectedTierId] = useState<string>(() => availableTiers[0]?.id || 'general');
 
@@ -299,18 +268,30 @@ export const BuyTicketModal: React.FC = () => {
                   key={tier.id}
                   type="button"
                   onClick={() => setSelectedTierId(tier.id)}
-                  className={`p-2 rounded-xl text-left border transition cursor-pointer flex flex-col justify-between ${
+                  className={`p-2.5 rounded-xl text-left border transition cursor-pointer flex flex-col justify-between ${
                     selectedTierId === tier.id
                       ? 'bg-[#FACC15] text-black border-[#FACC15] font-black shadow-md'
                       : 'bg-[#1E1E1E] text-white border-white/10 hover:border-white/30'
                   }`}
                 >
-                  <span className="text-[10px] font-black uppercase tracking-tight block truncate">
-                    {tier.badge}
-                  </span>
-                  <span className="text-xs font-black mt-1 block">
-                    {tier.formattedPrice}
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-tight truncate">
+                      {tier.badge}
+                    </span>
+                    {tier.remaining <= 10 && tier.remaining > 0 && (
+                      <span className="text-[9px] bg-rose-500/20 text-rose-300 font-bold px-1 rounded">
+                        Only {tier.remaining} left!
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-xs font-black">
+                      {tier.formattedPrice}
+                    </span>
+                    <span className="text-[9px] opacity-75 font-mono">
+                      {tier.soldCount}/{tier.maxLimit} sold
+                    </span>
+                  </div>
                 </button>
               ))}
             </div>

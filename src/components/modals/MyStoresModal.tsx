@@ -40,7 +40,11 @@ export const MyStoresModal: React.FC = () => {
     localStorage.getItem('ub_admin_session') === 'true'
   );
 
-  const isAdmin = isUserLoggedIn && (currentUser.role === 'Admin' || isAuthorizedAdminEmail(currentUser.email));
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+  const isAdmin = isUserLoggedIn && has5LocksPassed && (currentUser.role === 'Admin' || isAuthorizedAdminEmail(currentUser.email));
   const isPromoter = isUserLoggedIn && currentUser.role === 'Promoter';
 
   const [searchQuery, setSearchQuery] = useState('');

@@ -26,6 +26,9 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import android.util.Base64;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
@@ -33,6 +36,47 @@ import java.util.concurrent.Executor;
 public class NativePermissionsPlugin extends Plugin {
 
     private BroadcastReceiver smsReceiver = null;
+    private BroadcastReceiver alarmBroadcastReceiver = null;
+
+    @Override
+    public void load() {
+        super.load();
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(SmsPaymentReceiver.ACTION_PAYMENT_ALARM_TRIGGERED);
+            filter.addAction(PaymentAlarmService.ACTION_PAYMENT_ALARM_STOPPED);
+            filter.addAction(MainActivity.ACTION_NOTIFICATION_NAVIGATE);
+            alarmBroadcastReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (intent == null) return;
+                    String act = intent.getAction();
+                    if (SmsPaymentReceiver.ACTION_PAYMENT_ALARM_TRIGGERED.equals(act)) {
+                        JSObject ret = new JSObject();
+                        ret.put("id", intent.getStringExtra("id"));
+                        ret.put("amount", intent.getStringExtra("amount"));
+                        ret.put("customer", intent.getStringExtra("customer"));
+                        ret.put("sender", intent.getStringExtra("sender"));
+                        ret.put("body", intent.getStringExtra("body"));
+                        ret.put("dateMs", intent.getLongExtra("dateMs", System.currentTimeMillis()));
+                        notifyListeners("paymentAlarm", ret);
+                    } else if (PaymentAlarmService.ACTION_PAYMENT_ALARM_STOPPED.equals(act)) {
+                        notifyListeners("paymentAlarmStopped", new JSObject());
+                    } else if (MainActivity.ACTION_NOTIFICATION_NAVIGATE.equals(act)) {
+                        JSObject ret = new JSObject();
+                        ret.put("route", intent.getStringExtra("navigate_to"));
+                        notifyListeners("notificationNavigate", ret);
+                    }
+                }
+            };
+            ContextCompat.registerReceiver(
+                getContext().getApplicationContext(),
+                alarmBroadcastReceiver,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED
+            );
+        } catch (Exception ignored) {}
+    }
 
     private String[] resolvePermissionsForType(String type) {
         if (type == null) return new String[0];
@@ -335,7 +379,9 @@ public class NativePermissionsPlugin extends Plugin {
         ret.put("lastPaymentSmsText", prefs.getString("lastPaymentSmsText", ""));
         ret.put("lastPaymentSmsSender", prefs.getString("lastPaymentSmsSender", ""));
         ret.put("lastPaymentSmsAt", prefs.getString("lastPaymentSmsAt", ""));
+        ret.put("lastPaymentAmount", prefs.getString("lastPaymentAmount", ""));
         ret.put("lastConfirmedReference", prefs.getString("lastConfirmedReference", ""));
+        ret.put("alarmActive", PaymentAlarmService.isAlarmActive());
         call.resolve(ret);
     }
 
@@ -424,6 +470,104 @@ public class NativePermissionsPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    @PluginMethod
+    public void stopPaymentAlarm(PluginCall call) {
+        SharedPreferences prefs = getContext()
+            .getApplicationContext()
+            .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit().putBoolean("alarmActive", false).apply();
+        PaymentAlarmService.stopAlarm(getContext().getApplicationContext());
+        JSObject ret = new JSObject();
+        ret.put("stopped", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void isPaymentAlarmActive(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("active", PaymentAlarmService.isAlarmActive());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void configurePaymentAlarm(PluginCall call) {
+        String mode = call.getString("mode", "preset");
+        String presetId = call.getString("presetId", "loud-ringtone");
+        Double volumeDouble = call.getDouble("volume", 1.0);
+        float volume = volumeDouble != null ? Math.max(0.2f, Math.min(1.0f, volumeDouble.floatValue())) : 1.0f;
+        String customDataUrl = call.getString("customDataUrl", "");
+
+        SharedPreferences prefs = getContext()
+            .getApplicationContext()
+            .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString("alarmMode", mode != null ? mode : "preset");
+        editor.putString("alarmPresetId", presetId != null ? presetId : "loud-ringtone");
+        editor.putFloat("alarmVolume", volume);
+
+        File customFile = new File(getContext().getFilesDir(), "custom_payment_alarm.audio");
+        if ("custom".equals(mode) && customDataUrl != null && customDataUrl.contains(";base64,")) {
+            try {
+                String b64 = customDataUrl.substring(customDataUrl.indexOf(";base64,") + 8);
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                try (FileOutputStream fos = new FileOutputStream(customFile)) {
+                    fos.write(bytes);
+                }
+                editor.putString("alarmCustomFilePath", customFile.getAbsolutePath());
+            } catch (Exception e) {
+                editor.remove("alarmCustomFilePath");
+            }
+        } else if (!"custom".equals(mode)) {
+            if (customFile.exists()) {
+                try { customFile.delete(); } catch (Exception ignored) {}
+            }
+            editor.remove("alarmCustomFilePath");
+        }
+        editor.apply();
+
+        JSObject ret = new JSObject();
+        ret.put("saved", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void triggerTestAlarm(PluginCall call) {
+        Double volumeDouble = call.getDouble("volume", -1.0);
+        if (volumeDouble != null && volumeDouble >= 0.0) {
+            float volume = Math.max(0.2f, Math.min(1.0f, volumeDouble.floatValue()));
+            getContext()
+                .getApplicationContext()
+                .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putFloat("alarmVolume", volume)
+                .apply();
+        }
+        PaymentAlarmService.startAlarm(
+            getContext().getApplicationContext(),
+            "Sound Preview",
+            "Alarm Test",
+            "Test alarm sound only - No payment created",
+            false
+        );
+        JSObject ret = new JSObject();
+        ret.put("started", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void consumePendingNotificationRoute(PluginCall call) {
+        SharedPreferences prefs = getContext()
+            .getApplicationContext()
+            .getSharedPreferences(SmsPaymentReceiver.PREFS_NAME, Context.MODE_PRIVATE);
+        String route = prefs.getString("pendingNavigateTo", "");
+        if (route != null && !route.isEmpty()) {
+            prefs.edit().remove("pendingNavigateTo").apply();
+        }
+        JSObject ret = new JSObject();
+        ret.put("route", route != null ? route : "");
+        call.resolve(ret);
+    }
+
     private void unregisterSmsReceiverSafely() {
         if (smsReceiver != null) {
             try {
@@ -437,6 +581,12 @@ public class NativePermissionsPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         unregisterSmsReceiverSafely();
+        if (alarmBroadcastReceiver != null) {
+            try {
+                getContext().getApplicationContext().unregisterReceiver(alarmBroadcastReceiver);
+            } catch (Exception ignored) {}
+            alarmBroadcastReceiver = null;
+        }
         super.handleOnDestroy();
     }
 

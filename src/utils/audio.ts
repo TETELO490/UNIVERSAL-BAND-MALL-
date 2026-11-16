@@ -362,3 +362,65 @@ export const playErrorBuzzer = () => {
     console.warn('Audio error buzzer error:', e);
   }
 };
+
+let activePaymentAlarmInterval: ReturnType<typeof setInterval> | null = null;
+let isPaymentAlarmActiveState: boolean = false;
+
+/**
+ * Starts a loud looping alarm song that continues indefinitely until explicitly stopped.
+ */
+export const startLoopingPaymentAlarm = (config?: Partial<NewOrderSoundConfig> | null) => {
+  stopLoopingPaymentAlarm();
+  isPaymentAlarmActiveState = true;
+  void unlockAdminAudio();
+
+  const resolvedConfig: NewOrderSoundConfig = {
+    ...DEFAULT_NEW_ORDER_SOUND,
+    ...(config || {}),
+  };
+
+  // Play immediately
+  playNewOrderSound(resolvedConfig);
+
+  // Vibrate if supported
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([1000, 400, 1000, 400]);
+    }
+  } catch {}
+
+  // Repeating loop every 2.4 seconds until user presses STOP
+  activePaymentAlarmInterval = setInterval(() => {
+    if (!isPaymentAlarmActiveState) {
+      if (activePaymentAlarmInterval) clearInterval(activePaymentAlarmInterval);
+      return;
+    }
+    playNewOrderSound(resolvedConfig);
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([1000, 400, 1000, 400]);
+      }
+    } catch {}
+  }, 2400);
+};
+
+/**
+ * Stops the looping alarm song and cancels vibration.
+ */
+export const stopLoopingPaymentAlarm = () => {
+  isPaymentAlarmActiveState = false;
+  if (activePaymentAlarmInterval) {
+    clearInterval(activePaymentAlarmInterval);
+    activePaymentAlarmInterval = null;
+  }
+  stopActiveOrderSound();
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(0);
+    }
+  } catch {}
+};
+
+export const isPaymentAlarmPlaying = (): boolean => {
+  return isPaymentAlarmActiveState;
+};

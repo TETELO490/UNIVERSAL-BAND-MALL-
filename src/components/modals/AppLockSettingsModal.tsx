@@ -45,9 +45,6 @@ export const AppLockSettingsModal: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // 3. Pattern State
-  const [setupPattern, setSetupPattern] = useState<number[]>([]);
-
   useEffect(() => {
     setConfig(getMultiLockConfig(currentUser?.email));
   }, [currentUser?.email]);
@@ -95,21 +92,47 @@ export const AppLockSettingsModal: React.FC = () => {
     showMsg('Master security password saved and enabled!');
   };
 
+  // 3. Pattern State
+  const [setupPattern, setSetupPattern] = useState<number[]>([]);
+  const [patternStep, setPatternStep] = useState<'draw_new' | 'confirm_again'>('draw_new');
+  const [firstPattern, setFirstPattern] = useState<number[]>([]);
+  const [showPattern, setShowPattern] = useState<boolean>(true);
+
   const handlePatternDotClick = (dot: number) => {
     if (setupPattern.includes(dot)) return;
     setSetupPattern((prev) => [...prev, dot]);
   };
 
-  const handleSavePattern = async () => {
+  const handleNextOrSavePattern = async () => {
     if (setupPattern.length < 4) {
       showMsg('Pattern must connect at least 4 dots', true);
       return;
     }
-    await setPatternLock(setupPattern, currentUser?.email, currentUser?.id);
-    const updated = saveMultiLockConfig({ patternEnabled: true }, currentUser?.email, currentUser?.id);
-    setConfig(updated);
-    showMsg(`Pattern saved with ${setupPattern.length} points!`);
-    setSetupPattern([]);
+
+    if (patternStep === 'draw_new') {
+      setFirstPattern([...setupPattern]);
+      setSetupPattern([]);
+      setPatternStep('confirm_again');
+      showMsg('Draw pattern again to confirm.');
+    } else {
+      const firstStr = firstPattern.join('-');
+      const secondStr = setupPattern.join('-');
+      if (firstStr !== secondStr) {
+        showMsg('Patterns do not match, try again', true);
+        setFirstPattern([]);
+        setSetupPattern([]);
+        setPatternStep('draw_new');
+        return;
+      }
+
+      await setPatternLock(setupPattern, currentUser?.email, currentUser?.id);
+      const updated = saveMultiLockConfig({ patternEnabled: true }, currentUser?.email, currentUser?.id);
+      setConfig(updated);
+      showMsg(`Pattern saved and confirmed (${setupPattern.length} dots)!`);
+      setSetupPattern([]);
+      setFirstPattern([]);
+      setPatternStep('draw_new');
+    }
   };
 
   const handleToggle = (key: keyof MultiLockConfig) => {
@@ -424,10 +447,25 @@ export const AppLockSettingsModal: React.FC = () => {
         {activeTab === 'PATTERN' && (
           <div className="space-y-3 text-xs text-center flex-1">
             <div className="bg-[#101010] p-3 rounded-2xl border border-white/5 space-y-1">
-              <span className="text-gray-300 font-bold block">3×3 Gesture Pattern</span>
-              <p className="text-[11px] text-gray-500">
-                Connect at least 4 dots to configure your custom unlock pattern.
+              <span className="text-gray-300 font-bold block">
+                {patternStep === 'draw_new' ? 'Step 1: Draw New Pattern' : 'Step 2: Draw Pattern Again to Confirm'}
+              </span>
+              <p className="text-[11px] text-gray-400">
+                {patternStep === 'draw_new'
+                  ? 'Connect at least 4 dots to create your custom security pattern.'
+                  : 'Re-draw the exact same pattern to confirm and save.'}
               </p>
+            </div>
+
+            {/* Show Pattern Toggle */}
+            <div className="flex items-center justify-between px-3 py-2 bg-[#101010] rounded-xl border border-white/5">
+              <span className="text-gray-300 font-bold">Show pattern numbers</span>
+              <input
+                type="checkbox"
+                checked={showPattern}
+                onChange={(e) => setShowPattern(e.target.checked)}
+                className="w-4 h-4 accent-[#FACC15] cursor-pointer"
+              />
             </div>
 
             <div className="grid grid-cols-3 gap-3 w-48 mx-auto p-4 bg-black/60 rounded-3xl border border-white/10">
@@ -445,7 +483,7 @@ export const AppLockSettingsModal: React.FC = () => {
                         : 'bg-white/10 text-gray-400 hover:bg-white/20'
                     }`}
                   >
-                    {isSelected ? order + 1 : '•'}
+                    {isSelected && showPattern ? order + 1 : isSelected ? '•' : showPattern ? dot : '•'}
                   </button>
                 );
               })}
@@ -454,7 +492,11 @@ export const AppLockSettingsModal: React.FC = () => {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setSetupPattern([])}
+                onClick={() => {
+                  setSetupPattern([]);
+                  setFirstPattern([]);
+                  setPatternStep('draw_new');
+                }}
                 className="flex-1 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition cursor-pointer text-xs"
               >
                 Reset
@@ -462,10 +504,10 @@ export const AppLockSettingsModal: React.FC = () => {
               <button
                 type="button"
                 disabled={setupPattern.length < 4}
-                onClick={handleSavePattern}
+                onClick={handleNextOrSavePattern}
                 className="flex-1 py-2 rounded-xl bg-[#FACC15] hover:bg-yellow-400 disabled:opacity-40 text-black font-extrabold transition cursor-pointer text-xs shadow-md"
               >
-                Save Pattern
+                {patternStep === 'draw_new' ? 'Next: Confirm' : 'Confirm & Save'}
               </button>
             </div>
 

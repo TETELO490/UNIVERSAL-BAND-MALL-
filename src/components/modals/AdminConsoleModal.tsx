@@ -379,7 +379,7 @@ export const AdminConsoleModal: React.FC = () => {
             type="button"
             onClick={() => setIsSmsModalOpen(true)}
             className="p-1.5 rounded-xl bg-emerald-500/15 border border-emerald-400/40 hover:border-emerald-400 text-center transition cursor-pointer flex flex-col items-center justify-center gap-0.5 group"
-            title="TymeBank PayShap SMS Auto-Confirmation"
+            title="GoTyme / TymeBank SMS Payment Alerts"
           >
             <div className="w-6 h-6 rounded-lg bg-emerald-500 text-black flex items-center justify-center shrink-0">
               <Smartphone className="w-3.5 h-3.5 stroke-[2.5]" />

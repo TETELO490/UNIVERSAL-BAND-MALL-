@@ -59,7 +59,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const { currentUser } = useApp();
+  const { currentUser, cancelAdminLogin } = useApp();
 
   const [modalMode, setModalMode] = useState<
     'SETUP' | 'VERIFY' | 'FINGERPRINT_EMAIL_VERIFY'
@@ -180,57 +180,47 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
 
     const initVault = async () => {
       try {
-        // PART 1 REQUIREMENT: RESET ALL 5 ADMIN LOCKS
-        const resetDone = localStorage.getItem(RESET_FLAG_KEY);
-        if (!resetDone) {
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem('ub_admin_security_vault_v4');
-          localStorage.removeItem('ub_admin_session');
+        // Enforce all 5 locks start locked on every verification session
+        setVerifiedLocks({
+          PIN: false,
+          PASSWORD: false,
+          LUCKY: false,
+          PATTERN: false,
+          FINGERPRINT: false,
+        });
 
-          try {
-            await setDoc(
-              doc(db, 'adminSecurity', 'admin_security_root'),
-              {
-                isSetupComplete: false,
-                pin: '',
-                pinHash: '',
-                passwordHash: '',
-                luckyNumber: '',
-                luckyNumberHash: '',
-                pattern: [],
-                patternHash: '',
-                fingerprintCredentialId: '',
-                fingerprintEnrolled: false,
-                recoveryEmail: 'tetelophokwane98@gmail.com',
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          } catch (resetErr) {
-            console.warn('Firestore admin reset notice:', resetErr);
-          }
-
-          localStorage.setItem(RESET_FLAG_KEY, 'true');
-        }
-
-        // Try to load existing vault
-        const localRaw = localStorage.getItem(STORAGE_KEY);
+        const adminEmail = (currentUser?.email || localStorage.getItem('ub_admin_email') || 'tetelophokwane98@gmail.com').trim().toLowerCase();
         let loadedVault: AdminLocksVault | null = null;
 
-        if (localRaw) {
-          try {
-            const parsed = JSON.parse(localRaw);
-            if (parsed && parsed.isSetupComplete) {
-              loadedVault = parsed;
+        try {
+          // 1. Fetch from Firestore linked to Admin Account email
+          const snap = await getDoc(doc(db, 'adminSecurity', adminEmail));
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.isSetupComplete && data.pinHash && data.passwordHash) {
+              loadedVault = {
+                pin: data.pin || '',
+                pinHash: data.pinHash || '',
+                passwordHash: data.passwordHash || '',
+                luckyNumber: data.luckyNumber || '',
+                luckyNumberHash: data.luckyNumberHash || '',
+                pattern: data.pattern || [],
+                patternHash: data.patternHash || '',
+                fingerprintCredentialId: data.fingerprintCredentialId || '',
+                fingerprintEnrolled: Boolean(data.fingerprintCredentialId),
+                recoveryEmail: data.recoveryEmail || adminEmail,
+                isSetupComplete: true,
+                updatedAt: new Date().toISOString(),
+              };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedVault));
             }
-          } catch (_) {}
-        }
+          }
 
-        if (!loadedVault) {
-          try {
-            const snap = await getDoc(doc(db, 'adminSecurity', 'admin_security_root'));
-            if (snap.exists()) {
-              const data = snap.data();
+          // 2. Fallback to root if email doc not found yet
+          if (!loadedVault) {
+            const rootSnap = await getDoc(doc(db, 'adminSecurity', 'admin_security_root'));
+            if (rootSnap.exists()) {
+              const data = rootSnap.data();
               if (data.isSetupComplete && data.pinHash && data.passwordHash) {
                 loadedVault = {
                   pin: data.pin || '',
@@ -242,15 +232,31 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                   patternHash: data.patternHash || '',
                   fingerprintCredentialId: data.fingerprintCredentialId || '',
                   fingerprintEnrolled: Boolean(data.fingerprintCredentialId),
-                  recoveryEmail: data.recoveryEmail || 'tetelophokwane98@gmail.com',
+                  recoveryEmail: data.recoveryEmail || adminEmail,
                   isSetupComplete: true,
                   updatedAt: new Date().toISOString(),
                 };
+                await setDoc(doc(db, 'adminSecurity', adminEmail), {
+                  ...loadedVault,
+                  updatedAt: serverTimestamp(),
+                });
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedVault));
               }
             }
-          } catch (fsErr) {
-            console.warn('Firestore fetch notice:', fsErr);
+          }
+        } catch (fsErr) {
+          console.warn('Firestore cross-device fetch notice:', fsErr);
+        }
+
+        if (!loadedVault) {
+          const localRaw = localStorage.getItem(STORAGE_KEY);
+          if (localRaw) {
+            try {
+              const parsed = JSON.parse(localRaw);
+              if (parsed && parsed.isSetupComplete) {
+                loadedVault = parsed;
+              }
+            } catch (_) {}
           }
         }
 
@@ -316,21 +322,22 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     const updated = { ...verifiedLocks, [lock]: true };
     setVerifiedLocks(updated);
     setErrorMessage('');
+    const passedCount = Object.values(updated).filter(Boolean).length;
 
     if (checkAllLocksPassed(updated)) {
-      setSuccessMessage('All 5 Admin Locks Verified! Access Granted to Admin Dashboard...');
+      setSuccessMessage('All 5 logs unlocked! Access Granted to Admin Dashboard...');
       localStorage.setItem('ub_admin_session', 'true');
+      sessionStorage.setItem('ub_admin_5locks_passed', 'true');
       setTimeout(() => {
         onSuccess();
       }, 700);
     } else {
       const nextLock = getNextUnverifiedLock(lock, updated);
-      const passedCount = Object.values(updated).filter(Boolean).length;
-      setSuccessMessage(`${lock} Verified! (${passedCount} of 5 locks passed)`);
+      setSuccessMessage(`Unlock all 5 logs to continue - ${passedCount}/5 unlocked`);
       setTimeout(() => {
         setSuccessMessage('');
         setActiveLockTab(nextLock);
-      }, 500);
+      }, 600);
     }
   };
 
@@ -613,16 +620,21 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
         updatedAt: new Date().toISOString(),
       };
 
+      const adminEmail = (currentUser?.email || localStorage.getItem('ub_admin_email') || newVault.recoveryEmail || 'tetelophokwane98@gmail.com').trim().toLowerCase();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newVault));
       localStorage.setItem('ub_admin_session', 'true');
 
       try {
+        await setDoc(doc(db, 'adminSecurity', adminEmail), {
+          ...newVault,
+          updatedAt: serverTimestamp(),
+        });
         await setDoc(doc(db, 'adminSecurity', 'admin_security_root'), {
           ...newVault,
           updatedAt: serverTimestamp(),
         });
       } catch (fsErr) {
-        console.warn('Firestore mirror warning:', fsErr);
+        console.warn('Firestore cross-device sync warning:', fsErr);
       }
 
       setVault(newVault);
@@ -708,6 +720,10 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedVault));
         try {
+          await setDoc(doc(db, 'adminSecurity', adminEmail), {
+            ...updatedVault,
+            updatedAt: serverTimestamp(),
+          });
           await setDoc(doc(db, 'adminSecurity', 'admin_security_root'), {
             ...updatedVault,
             updatedAt: serverTimestamp(),
@@ -816,9 +832,14 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
 
   const handleModalClose = () => {
     if (modalMode === 'VERIFY' && !checkAllLocksPassed(verifiedLocks)) {
-      triggerError('Unlock all 5 keys to continue');
+      triggerError(`Unlock all 5 logs to continue - ${verifiedCount}/5 unlocked`);
       return;
     }
+    onClose();
+  };
+
+  const handleCancelAndExit = async () => {
+    await cancelAdminLogin();
     onClose();
   };
 
@@ -833,6 +854,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
         <button
           onClick={handleModalClose}
           className="absolute top-4 right-4 text-gray-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition cursor-pointer"
+          title="Close"
         >
           <X className="w-5 h-5" />
         </button>
@@ -856,7 +878,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
             <p className="text-[11px] text-gray-400">
               {modalMode === 'SETUP'
                 ? 'Configure PIN, Pass, Lucky, Pattern, and Fingerprint'
-                : 'Unlock ALL 5 locks to access Admin Dashboard'}
+                : `Unlock all 5 logs to continue - ${verifiedCount}/5 unlocked`}
             </p>
           </div>
         </div>
@@ -1349,8 +1371,42 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
               </div>
             )}
 
-            {/* TAB 1: PIN */}
-            {activeLockTab === 'PIN' && (
+            {/* If current active lock is already unlocked, show unlocked confirmation */}
+            {verifiedLocks[activeLockTab] ? (
+              <div className="py-6 flex flex-col items-center justify-center text-center gap-3 bg-black/40 border border-emerald-500/30 rounded-2xl p-4 my-2">
+                <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                  <CheckCircle2 className="w-6 h-6 stroke-[2.5]" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-white">
+                    {activeLockTab === 'PIN' && '1. PIN Unlocked ✓'}
+                    {activeLockTab === 'PASSWORD' && '2. Password Unlocked ✓'}
+                    {activeLockTab === 'LUCKY' && '3. Lucky Number Unlocked ✓'}
+                    {activeLockTab === 'PATTERN' && '4. Pattern Unlocked ✓'}
+                    {activeLockTab === 'FINGERPRINT' && '5. Fingerprint Unlocked ✓'}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Unlock all 5 logs to continue - {verifiedCount}/5 unlocked
+                  </p>
+                </div>
+                {verifiedCount < 5 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = getNextUnverifiedLock(activeLockTab, verifiedLocks);
+                      setActiveLockTab(next);
+                    }}
+                    className="mt-1 px-4 py-2 bg-[#FACC15] text-black font-black text-xs rounded-xl hover:bg-yellow-400 transition cursor-pointer flex items-center gap-1.5 shadow"
+                  >
+                    <span>Continue to next lock</span>
+                    <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {/* TAB 1: PIN */}
+                {activeLockTab === 'PIN' && (
               <div className="flex flex-col items-center gap-2 py-1">
                 <span className="text-xs text-gray-300 font-bold">
                   Lock 1: Enter 4-Digit Admin PIN
@@ -1534,6 +1590,22 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                 </button>
               </div>
             )}
+              </>
+            )}
+
+            {/* Cancel / Exit Admin Login Action */}
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between mt-2">
+              <button
+                type="button"
+                onClick={handleCancelAndExit}
+                className="text-xs text-rose-400 hover:text-rose-300 font-bold transition flex items-center gap-1.5 cursor-pointer py-1.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20"
+              >
+                <span>Exit Admin Login</span>
+              </button>
+              <span className="text-[11px] font-semibold text-gray-400">
+                {verifiedCount} of 5 unlocked
+              </span>
+            </div>
           </div>
         )}
 

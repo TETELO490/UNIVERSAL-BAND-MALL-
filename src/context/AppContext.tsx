@@ -37,7 +37,7 @@ import { GoogleAuth } from '@codetrix-studio/capacitor-google-auth';
 import { auth, googleProvider, db, handleFirestoreError, OperationType, testConnection, getActionCodeSettings } from '../firebase';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { firebaseConfig } from '../firebase';
-import { EventItem, MenuItem, MenuItemDoc, Promoter, Store, Ticket, UserProfile, StoreRequest, WalletDoc, WalletTransaction, AttendanceStatus, AttendanceLog, VendorSale, CartItem, MallOrder, StoreMessage, StoreWorker, StorePresence, NewOrderSoundConfig, AppNotificationBanner, SupportChat, SupportMessage, SupportTicketAttachment } from '../types';
+import { EventItem, MenuItem, MenuItemDoc, Promoter, Store, Ticket, UserProfile, StoreRequest, WalletDoc, WalletTransaction, AttendanceStatus, AttendanceLog, VendorSale, CartItem, MallOrder, StoreMessage, StoreWorker, StorePresence, NewOrderSoundConfig, ActivePaymentAlarm, AppNotificationBanner, SupportChat, SupportMessage, SupportTicketAttachment } from '../types';
 import { calculatePlatformFee, getPhoneLookupFeeSplit, MALL_FEES } from '../utils/mallFees';
 import { isAlcoholItem } from '../utils/ageHelper';
 import { isAuthorizedAdminEmail, addAuthorizedAdminEmail } from '../utils/cryptoHelper';
@@ -48,6 +48,8 @@ import {
   playTicketPaidSuccessSound,
   playSuccessChime,
   triggerBackgroundNotification,
+  startLoopingPaymentAlarm,
+  stopLoopingPaymentAlarm,
 } from '../utils/audio';
 import {
   isTicketWaitingPayment,
@@ -60,6 +62,7 @@ import {
   findMatchingWaitingTicket,
   isTopUpPayshapReference,
   extractEventNameFromPayshapRef,
+  checkIsTymeBankPaymentAlertSms,
 } from '../utils/ticketStatus';
 import {
   INITIAL_EVENTS,
@@ -91,10 +94,17 @@ import {
 import {
   checkSmsPermissionGranted,
   ensureSmsPermission,
+  ensureNotificationsPermission,
   readRealSmsInbox,
   startNativeSmsListener,
   configureBackgroundSmsConfirmation,
   getBackgroundSmsState,
+  stopNativePaymentAlarm,
+  isNativePaymentAlarmActive,
+  configureNativePaymentAlarm,
+  triggerNativeTestAlarm,
+  consumePendingNotificationRoute,
+  subscribeNativePaymentAlarmEvents,
   SmsInboxMessage,
 } from '../utils/nativePermissions';
 
@@ -217,6 +227,8 @@ interface AppContextType {
   setIsAdminSecurityModalOpen: (open: boolean) => void;
   openAdminLoginFlow: () => void;
   handleAdminSecuritySuccess: () => void;
+  cancelAdminLogin: () => Promise<void>;
+  terminateAdminSession: () => Promise<void>;
   wipeAndReset: () => Promise<void>;
   
   buyTicket: (
@@ -254,6 +266,8 @@ interface AppContextType {
     refText?: string,
     smsText?: string
   ) => Promise<boolean>;
+  confirmTicketPaymentManually: (ticketId: string) => Promise<boolean>;
+  confirmMallOrderPaymentManually: (orderId: string) => Promise<boolean>;
   markPayshapRequestSent: (ticketId: string) => Promise<boolean>;
   processTymebankSms: (
     smsText: string,
@@ -272,6 +286,7 @@ interface AppContextType {
   lastPaymentSmsText: string;
   lastPaymentSmsSender: string;
   lastPaymentSmsAt: string;
+  lastPaymentAmount: string;
   lastConfirmedReference: string;
   smsPermissionActive: boolean;
   updatePaymentConfirmationSettings: (params: {
@@ -281,6 +296,9 @@ interface AppContextType {
   requestAdminSmsPermissionPopup: () => Promise<boolean>;
   newOrderSound: NewOrderSoundConfig;
   updateNewOrderSound: (config: NewOrderSoundConfig) => Promise<void>;
+  activePaymentAlarm: ActivePaymentAlarm | null;
+  dismissPaymentAlarm: () => Promise<void>;
+  testPaymentAlarm: (overrideSound?: NewOrderSoundConfig) => Promise<void>;
   supportRingEnabled: boolean;
   setSupportRingEnabled: (enabled: boolean) => void;
   supportChats: SupportChat[];
@@ -722,12 +740,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastPaymentSmsAt, setLastPaymentSmsAt] = useState<string>(() => {
     return localStorage.getItem('ub_last_payment_sms_at') || '';
   });
+  const [lastPaymentAmount, setLastPaymentAmount] = useState<string>(() => {
+    return localStorage.getItem('ub_last_payment_amount') || '';
+  });
   const [lastConfirmedReference, setLastConfirmedReference] = useState<string>(() => {
     return localStorage.getItem('ub_last_confirmed_reference') || '';
   });
   const [smsPermissionActive, setSmsPermissionActive] = useState<boolean>(() => {
     return localStorage.getItem('tymebank_sms_permission') === 'true';
   });
+  const [activePaymentAlarm, setActivePaymentAlarm] = useState<ActivePaymentAlarm | null>(null);
 
   const paymentBankMessageRef = useRef<string>(paymentBankMessage);
   useEffect(() => {
@@ -975,10 +997,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const recordLivePaymentTelemetry = (params: {
     smsText: string;
     sender?: string;
+    amount?: string;
     confirmedReference?: string;
   }) => {
     const cleanText = String(params.smsText || '').trim();
     const cleanSender = String(params.sender || '').trim();
+    const cleanAmount = String(params.amount || '').trim();
     const nowIso = new Date().toISOString();
     const cleanRef = params.confirmedReference ? params.confirmedReference.trim() : '';
 
@@ -990,6 +1014,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem('ub_last_payment_sms_text', cleanText);
         localStorage.setItem('ub_last_payment_sms_sender', cleanSender);
         localStorage.setItem('ub_last_payment_sms_at', nowIso);
+      } catch {}
+    }
+
+    if (cleanAmount) {
+      setLastPaymentAmount(cleanAmount);
+      try {
+        localStorage.setItem('ub_last_payment_amount', cleanAmount);
       } catch {}
     }
 
@@ -1008,6 +1039,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       payload.lastPaymentSmsSender = cleanSender;
       payload.lastPaymentSmsAt = nowIso;
     }
+    if (cleanAmount) {
+      payload.lastPaymentAmount = cleanAmount;
+    }
     if (cleanRef) {
       payload.lastConfirmedReference = cleanRef;
     }
@@ -1020,6 +1054,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const requestAdminSmsPermissionPopup = async (): Promise<boolean> => {
     const res = await ensureSmsPermission();
     setSmsPermissionActive(Boolean(res.granted));
+    if (Capacitor.isNativePlatform()) {
+      void ensureNotificationsPermission().catch(() => {});
+    }
     if (res.granted && Capacitor.isNativePlatform()) {
       void configureBackgroundSmsConfirmation({
         enabled: true,
@@ -1041,9 +1078,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...config,
     };
     setNewOrderSound(normalized);
+    newOrderSoundRef.current = normalized;
     try {
       localStorage.setItem('ub_new_order_sound', JSON.stringify(normalized));
     } catch {}
+    if (Capacitor.isNativePlatform()) {
+      void configureNativePaymentAlarm({
+        mode: normalized.mode,
+        presetId: normalized.presetId,
+        volume: normalized.volume ?? 1,
+        customDataUrl: normalized.customDataUrl,
+      });
+    }
     try {
       // Guard Firestore document size (<700KB for customDataUrl; full audio remains in localStorage)
       const firestoreSound: NewOrderSoundConfig =
@@ -1065,6 +1111,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     } catch (e) {
       console.warn('Could not persist New Order Sound to Firestore:', e);
+    }
+  };
+
+  const dismissPaymentAlarm = async () => {
+    stopLoopingPaymentAlarm();
+    setActivePaymentAlarm(null);
+    if (Capacitor.isNativePlatform()) {
+      await stopNativePaymentAlarm();
+    }
+    try {
+      await setDoc(
+        doc(db, 'settings', 'payshap'),
+        { alarmActive: false, updatedAt: new Date().toISOString() },
+        { merge: true }
+      );
+    } catch {}
+  };
+
+  const testPaymentAlarm = async (overrideSound?: NewOrderSoundConfig) => {
+    const soundCfg = overrideSound || newOrderSoundRef.current;
+    playNewOrderSound(soundCfg);
+    if (Capacitor.isNativePlatform()) {
+      await configureNativePaymentAlarm({
+        mode: soundCfg.mode,
+        presetId: soundCfg.presetId,
+        volume: soundCfg.volume ?? 1,
+        customDataUrl: soundCfg.customDataUrl,
+      });
+      await triggerNativeTestAlarm({ volume: soundCfg.volume ?? 1 });
     }
   };
 
@@ -1149,6 +1224,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setLastPaymentSmsAt(data.lastPaymentSmsAt);
             try {
               localStorage.setItem('ub_last_payment_sms_at', data.lastPaymentSmsAt);
+            } catch {}
+          }
+          if (data && typeof data.lastPaymentAmount === 'string' && data.lastPaymentAmount.trim()) {
+            setLastPaymentAmount(data.lastPaymentAmount);
+            try {
+              localStorage.setItem('ub_last_payment_amount', data.lastPaymentAmount);
             } catch {}
           }
           if (data && typeof data.lastConfirmedReference === 'string' && data.lastConfirmedReference.trim()) {
@@ -1465,12 +1546,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [carts]);
 
   // Wallet balance is synchronized with localStorage 'wallet_balance'
+  // Wallet balance is synchronized with localStorage 'wallet_balance'
   const [currentUser, setCurrentUser] = useState<UserProfile>(() => {
+    // CRITICAL RULE 2: Admin session must NOT survive app exit, restart, or phone restart!
+    const locksPassed = typeof window !== 'undefined' && sessionStorage.getItem('ub_admin_5locks_passed') === 'true';
+    if (!locksPassed && typeof window !== 'undefined') {
+      localStorage.removeItem('ub_admin_session');
+    }
+
     const isRegistered = localStorage.getItem('ub_has_registered') === 'true';
-    const isAdminSession = localStorage.getItem('ub_admin_session') === 'true';
     const rawBal = localStorage.getItem('wallet_balance');
     const storedBal = rawBal !== null && !isNaN(Number(rawBal)) && Number(rawBal) >= 0 ? Number(rawBal) : 0;
-    if (isRegistered || isAdminSession) {
+    if (isRegistered) {
       try {
         const saved = localStorage.getItem('ub_user_profile');
         if (saved) {
@@ -1483,19 +1570,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               clean === 'admin@ub.co.za' ||
               parsed.role === 'Admin' ||
               parsed.role === 'admin' ||
-              isAdminSession ||
               isAuthorizedAdminEmail(clean);
 
-            if (isAdmin) {
-              addAuthorizedAdminEmail(clean);
-              localStorage.setItem('ub_admin_session', 'true');
+            // If account is admin, it MUST be logged out on fresh app open/restart.
+            // Admin must log in and unlock all 5 logs every time from scratch.
+            if (isAdmin && !locksPassed) {
+              localStorage.removeItem('ub_admin_session');
+              localStorage.removeItem('ub_user_profile');
+              localStorage.removeItem('ub_has_registered');
+              sessionStorage.removeItem('ub_admin_5locks_passed');
+              return {
+                id: 'guest_user',
+                name: 'New User',
+                fullName: 'New User',
+                email: '',
+                phone: '',
+                role: 'Customer',
+                assignedStoreId: '',
+                assignedStoreName: '',
+                walletBalance: 0,
+                isRegistered: false,
+              };
             }
 
-            const fallbackName =
-              clean === 'tetelophokwane98@gmail.com'
-                ? 'Tetelo Phokwane'
-                : (isAdmin ? 'System Admin' : clean.split('@')[0]);
-
+            const fallbackName = clean.split('@')[0];
             const resolvedName =
               parsed.name && parsed.name !== 'New User'
                 ? parsed.name
@@ -1511,16 +1609,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ...parsed,
               name: resolvedName,
               fullName: parsed.fullName && parsed.fullName !== 'New User' ? parsed.fullName : resolvedName,
-              role: isAdmin ? 'Admin' : (parsed.role || 'Customer'),
+              role: parsed.role || 'Customer',
               walletBalance: effectiveBal,
               customerQrId: resolvedQrId || undefined,
               isRegistered: true,
             };
-            if (resolvedQrId && parsed.customerQrId !== resolvedQrId) {
-              try {
-                localStorage.setItem('ub_user_profile', JSON.stringify(hydratedProfile));
-              } catch (e) {}
-            }
             return hydratedProfile;
           }
         }
@@ -1542,19 +1635,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   });
 
-  // Clear admin session on app exit, close, kill, or restart
+  const [pendingAdminAuthUser, setPendingAdminAuthUser] = useState<UserProfile | null>(null);
+
+  // Clear admin session on app exit, close, kill, or restart (Strict Rule 2)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const activeSession = sessionStorage.getItem('ub_app_active');
-      if (!activeSession) {
-        localStorage.removeItem('ub_admin_session');
-      }
-      sessionStorage.setItem('ub_app_active', 'true');
-
       const clearAdminSession = () => {
         localStorage.removeItem('ub_admin_session');
+        sessionStorage.removeItem('ub_admin_5locks_passed');
         sessionStorage.removeItem('ub_app_active');
+        const profileRaw = localStorage.getItem('ub_user_profile');
+        if (profileRaw) {
+          try {
+            const p = JSON.parse(profileRaw);
+            if (p?.role === 'Admin' || isAuthorizedAdminEmail(p?.email)) {
+              localStorage.removeItem('ub_user_profile');
+              localStorage.removeItem('ub_has_registered');
+            }
+          } catch {}
+        }
       };
+
       window.addEventListener('beforeunload', clearAdminSession);
       window.addEventListener('pagehide', clearAdminSession);
       return () => {
@@ -1595,10 +1696,83 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const routeHistoryRef = useRef<string[]>(['/']);
   const lastBackPressTimeRef = useRef<number>(0);
 
+  const cancelAdminLogin = async () => {
+    localStorage.removeItem('ub_admin_session');
+    sessionStorage.removeItem('ub_admin_5locks_passed');
+    sessionStorage.removeItem('ub_app_active');
+    setPendingAdminAuthUser(null);
+    setIsAdminSecurityModalOpen(false);
+    if (auth?.currentUser) {
+      await signOut(auth).catch(() => {});
+    }
+    setFirebaseUser(null);
+    setCurrentUser({
+      id: 'guest_user',
+      name: 'New User',
+      fullName: 'New User',
+      email: '',
+      phone: '',
+      role: 'Customer',
+      assignedStoreId: '',
+      assignedStoreName: '',
+      walletBalance: 0,
+      isRegistered: false,
+    });
+    setCurrentRoute('/login');
+  };
+
+  const terminateAdminSession = async () => {
+    localStorage.removeItem('ub_admin_session');
+    sessionStorage.removeItem('ub_admin_5locks_passed');
+    sessionStorage.removeItem('ub_app_active');
+    setPendingAdminAuthUser(null);
+    setIsAdminSecurityModalOpen(false);
+    const profileRaw = localStorage.getItem('ub_user_profile');
+    if (profileRaw) {
+      try {
+        const p = JSON.parse(profileRaw);
+        if (p?.role === 'Admin' || isAuthorizedAdminEmail(p?.email)) {
+          localStorage.removeItem('ub_user_profile');
+          localStorage.removeItem('ub_has_registered');
+        }
+      } catch {}
+    }
+    if (auth?.currentUser) {
+      await signOut(auth).catch(() => {});
+    }
+    setFirebaseUser(null);
+    setCurrentUser({
+      id: 'guest_user',
+      name: 'New User',
+      fullName: 'New User',
+      email: '',
+      phone: '',
+      role: 'Customer',
+      assignedStoreId: '',
+      assignedStoreName: '',
+      walletBalance: 0,
+      isRegistered: false,
+    });
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleBackPress = () => {
+      // 1. If admin security modal is open, back press cancels admin login and returns to login
+      if (isAdminSecurityModalOpen) {
+        void cancelAdminLogin();
+        return;
+      }
+
+      // 2. If inside admin-console modal, back press exits admin console and logs out admin account
+      if (activeModal === 'admin-console') {
+        setActiveModal(null);
+        void terminateAdminSession();
+        setCurrentRoute('/login');
+        return;
+      }
+
       if (activeModal) {
         setActiveModal(null);
         return;
@@ -1606,6 +1780,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const isHome = currentRoute === '/' || currentRoute === '/home' || currentRoute === '/stores' || currentRoute === '/discovery';
       if (!isHome) {
+        if (currentRoute.startsWith('/admin')) {
+          void terminateAdminSession();
+          setCurrentRoute('/login');
+          return;
+        }
+
         if (routeHistoryRef.current.length > 1) {
           routeHistoryRef.current.pop();
           const prev = routeHistoryRef.current[routeHistoryRef.current.length - 1] || '/';
@@ -1620,6 +1800,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const now = Date.now();
       if (now - lastBackPressTimeRef.current < 2000) {
+        void terminateAdminSession();
         try {
           CapacitorApp.exitApp();
         } catch {
@@ -3180,543 +3361,82 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return updatedOrder;
   };
 
+  const confirmTicketPaymentManually = async (ticketId: string): Promise<boolean> => {
+    const targetTicket = tickets.find((t) => t.id === ticketId || t.ticketId === ticketId);
+    const refText = targetTicket?.payshapReference || targetTicket?.bandCode || ticketId;
+    const smsText = lastPaymentSmsText || 'MANUAL ADMIN CONFIRMATION AFTER SMS CHECK';
+    const ok = await updateTicketPaymentStatus(ticketId, 'PAID', refText, smsText);
+    if (ok) {
+      recordLivePaymentTelemetry({
+        smsText: lastPaymentSmsText,
+        sender: lastPaymentSmsSender,
+        amount: lastPaymentAmount,
+        confirmedReference: refText,
+      });
+    }
+    return ok;
+  };
+
+  const confirmMallOrderPaymentManually = async (orderId: string): Promise<boolean> => {
+    const order = mallOrdersRef.current.find((o) => o.id === orderId);
+    if (!order) return false;
+    await markMallOrderPaidFromSms(
+      order,
+      order.payshapReference || order.collectionCode || order.orderNumber,
+      lastPaymentSmsText || 'MANUAL ADMIN CONFIRMATION AFTER SMS CHECK'
+    );
+    return true;
+  };
+
+  /**
+   * MANUAL APPROVAL ONLY:
+   * Real GoTyme / TymeBank incoming SMS NEVER auto-approves tickets or wallet balances.
+   * Instead, for ANY amount (R1, R5, R50, R100, R1000, etc.) it triggers a LOUD LOOPING ALARM
+   * and notification ("PAYMENT RECEIVED - Check SMS") until the Admin stops it & approves manually.
+   */
   const processTymebankSms = (
     smsText: string,
     sender: string = 'TYMEBANK'
   ): { success: boolean; message: string; ticket?: Ticket; data?: any } => {
-    const bankMessageSetting = paymentBankMessageRef.current || 'TymeBank';
-    const refFormatSetting = paymentReferenceFormatRef.current || 'UB-';
-
-    // Match Admin's live Bank Message filter AND Reference Format / payment reference
-    const extracted = extractLivePaymentSmsDetails(smsText, sender, {
-      bankMessage: bankMessageSetting,
-      referenceFormat: refFormatSetting,
-    });
-
-    if (!extracted.valid) {
+    const parsed = checkIsTymeBankPaymentAlertSms(smsText, sender);
+    if (!parsed.isPayment) {
       return {
         success: false,
-        message: extracted.reason || `Ignored SMS: did not match "${bankMessageSetting}" and "${refFormatSetting}..."`,
+        message: 'Ignored SMS: must be from GoTyme Bank / TymeBank and contain "You received" and "from".',
       };
     }
 
-    const {
-      paidAmount,
-      senderName,
-      reference: refText,
-      formattedOrderRef,
-      matchedBankWord,
-      rawText: text,
-    } = extracted;
-
-    // Record live SMS telemetry immediately once Bank Message + Reference pattern matched
+    const nowMs = Date.now();
     recordLivePaymentTelemetry({
-      smsText: text,
-      sender: sender || matchedBankWord,
+      smsText: parsed.rawText,
+      sender: parsed.senderName || sender,
+      amount: parsed.amount,
     });
 
-    const parts = refText.split(/\s+/);
-    const lastPartUpper = (parts[parts.length - 1] || '').toUpperCase();
-    const isTicketTierSuffix =
-      lastPartUpper === 'GENERAL' ||
-      lastPartUpper === 'VIP' ||
-      lastPartUpper === 'KIDS' ||
-      lastPartUpper === 'EARLYBIRD' ||
-      lastPartUpper === 'EARLY' ||
-      lastPartUpper === 'VVIP';
-
-    // 1. Priority LIVE check: Direct Order / Ticket Reference match (e.g. UB-1234)
-    if (formattedOrderRef) {
-      const refUpper = formattedOrderRef.toUpperCase();
-      const matchedTicketByRef =
-        tickets.find(
-          (t) =>
-            isTicketWaitingPayment(t) &&
-            (String(t.id || '').toUpperCase() === refUpper ||
-              String(t.ticketId || '').toUpperCase() === refUpper ||
-              String(t.bandCode || '').toUpperCase() === refUpper ||
-              String(t.payshapReference || '').toUpperCase() === refUpper)
-        ) ||
-        tickets.find(
-          (t) =>
-            String(t.id || '').toUpperCase() === refUpper ||
-            String(t.ticketId || '').toUpperCase() === refUpper ||
-            String(t.bandCode || '').toUpperCase() === refUpper
-        );
-
-      if (matchedTicketByRef) {
-        if (isTicketPaid(matchedTicketByRef)) {
-          recordLivePaymentTelemetry({
-            smsText: text,
-            sender: sender || matchedBankWord,
-            confirmedReference: refUpper,
-          });
-          return {
-            success: true,
-            message: `Already confirmed ${refUpper} as PAID.`,
-            ticket: matchedTicketByRef,
-            data: { reference: refUpper, paidAmount },
-          };
-        }
-
-        void updateTicketPaymentStatus(matchedTicketByRef.id, 'PAID', refUpper, text);
-        recordLivePaymentTelemetry({
-          smsText: text,
-          sender: sender || matchedBankWord,
-          confirmedReference: refUpper,
-        });
-
-        const custName =
-          matchedTicketByRef.attendeeName ||
-          matchedTicketByRef.customerName ||
-          senderName ||
-          'Customer';
-        const tierLabel = matchedTicketByRef.ticketTier || 'General';
-        const amountLabel = paidAmount > 0 ? ` - R${paidAmount.toFixed(0)}` : '';
-        const logMsg = `✅ ${refUpper} (${matchedBankWord}) - ${custName} - PAID${amountLabel}`;
-        const logItem = {
-          id: `sms_${Date.now()}`,
-          text,
-          time: new Date().toLocaleTimeString(),
-          status: logMsg,
-        };
-        setTymebankSmsLogs((prev) => {
-          const updated = [logItem, ...prev.slice(0, 49)];
-          try {
-            localStorage.setItem('tymebank_sms_logs', JSON.stringify(updated));
-          } catch {}
-          return updated;
-        });
-
-        return {
-          success: true,
-          message: logMsg,
-          ticket: { ...matchedTicketByRef, paymentStatus: 'PAID', verifiedSmsText: text },
-          data: {
-            paidAmount,
-            customerName: custName,
-            ticketType: tierLabel,
-            reference: refUpper,
-            eventTitle: matchedTicketByRef.eventTitle,
-            eventDate: matchedTicketByRef.eventDate,
-          },
-        };
-      }
-
-      // Check Mall Orders matching Reference Format (orderNumber, collectionCode, payshapReference, id)
-      const matchedMallOrder = mallOrdersRef.current.find(
-        (o) =>
-          String(o.orderNumber || '').toUpperCase() === refUpper ||
-          String(o.collectionCode || '').toUpperCase() === refUpper ||
-          String(o.payshapReference || '').toUpperCase() === refUpper ||
-          String(o.id || '').toUpperCase() === refUpper
-      );
-
-      if (matchedMallOrder) {
-        if (matchedMallOrder.paymentStatus !== 'PAID' && matchedMallOrder.status !== 'paid') {
-          void markMallOrderPaidFromSms(matchedMallOrder, refUpper, text);
-        }
-        recordLivePaymentTelemetry({
-          smsText: text,
-          sender: sender || matchedBankWord,
-          confirmedReference: refUpper,
-        });
-
-        const amountLabel = paidAmount > 0 ? ` - R${paidAmount.toFixed(0)}` : '';
-        const logMsg = `✅ ${refUpper} (${matchedBankWord}) - ${matchedMallOrder.customerName} Mall Order - PAID${amountLabel}`;
-        const logItem = {
-          id: `sms_${Date.now()}`,
-          text,
-          time: new Date().toLocaleTimeString(),
-          status: logMsg,
-        };
-        setTymebankSmsLogs((prev) => {
-          const updated = [logItem, ...prev.slice(0, 49)];
-          try {
-            localStorage.setItem('tymebank_sms_logs', JSON.stringify(updated));
-          } catch {}
-          return updated;
-        });
-
-        return {
-          success: true,
-          message: logMsg,
-          data: {
-            paidAmount,
-            customerName: matchedMallOrder.customerName,
-            reference: refUpper,
-            type: 'MALL_ORDER',
-          },
-        };
-      }
-    }
-
-    // 2. Check for PayShap Wallet Top-Up reference ("Universal Band Top Up", etc.)
-    const pendingTopupMatches = walletTopups.filter(
-      (req) =>
-        req.status === 'PENDING_PAYMENT' &&
-        (paidAmount <= 0 || Math.abs(req.amount - paidAmount) < 1) &&
-        req.payshapReference.trim().toLowerCase() === refText.trim().toLowerCase()
-    );
-    const isTopUpRef =
-      isTopUpPayshapReference(refText) ||
-      pendingTopupMatches.length > 0 ||
-      (!isTicketTierSuffix && parts.length >= 3 && parts[1]?.toUpperCase() === 'TOPUP');
-
-    if (isTopUpRef) {
-      const trailingIsNumber = /^\d+(\.\d+)?$/.test(lastPartUpper);
-      const isLegacyTopupFormat = !isTicketTierSuffix && parts.length >= 3 && parts[1]?.toUpperCase() === 'TOPUP';
-      const topupNameInSms = isLegacyTopupFormat
-        ? trailingIsNumber && parts.length >= 4
-          ? parts.slice(2, parts.length - 1).join(' ')
-          : parts.slice(2).join(' ')
-        : '';
-
-      const senderLower = senderName.trim().toLowerCase();
-      const pendingReq =
-        (senderLower &&
-          pendingTopupMatches.find((req) =>
-            req.userName.toLowerCase().includes(senderLower)
-          )) ||
-        pendingTopupMatches.find((req) => req.userId === currentUser?.id) ||
-        pendingTopupMatches[0] ||
-        walletTopups.find(
-          (req) =>
-            req.status === 'PENDING_PAYMENT' &&
-            (paidAmount <= 0 || Math.abs(req.amount - paidAmount) < 1) &&
-            ((topupNameInSms &&
-              req.userName.toLowerCase().includes(topupNameInSms.toLowerCase())) ||
-              (senderLower && req.userName.toLowerCase().includes(senderLower)))
-        );
-
-      const lookupNameLower = (topupNameInSms || senderName || '').trim().toLowerCase();
-      const currentFullLower = (currentUser?.fullName || '').toLowerCase();
-      const currentNameLower = (currentUser?.name || '').toLowerCase();
-      const currentMatchesName =
-        Boolean(lookupNameLower) &&
-        ((currentFullLower && (currentFullLower.includes(lookupNameLower) || lookupNameLower.includes(currentFullLower))) ||
-          (currentNameLower && (currentNameLower.includes(lookupNameLower) || lookupNameLower.includes(currentNameLower))));
-
-      const registeredOtherUser =
-        !pendingReq && lookupNameLower
-          ? allRegisteredUsers.find((u) => {
-              if (u.id === currentUser?.id) return false;
-              const uFull = (u.fullName || '').toLowerCase();
-              const uName = (u.name || '').toLowerCase();
-              return (
-                (uFull && (uFull.includes(lookupNameLower) || lookupNameLower.includes(uFull))) ||
-                (uName && (uName.includes(lookupNameLower) || lookupNameLower.includes(uName)))
-              );
-            })
-          : undefined;
-
-      const matchesCurrentUser =
-        (pendingReq && pendingReq.userId === currentUser?.id) ||
-        (!pendingReq &&
-          !registeredOtherUser &&
-          currentUser?.isRegistered &&
-          (currentMatchesName || !lookupNameLower || isTopUpPayshapReference(refText)));
-
-      if (paidAmount > 0) {
-        if (matchesCurrentUser) {
-          void topUpWallet(paidAmount, refText);
-        } else {
-          const targetUserId = pendingReq?.userId || registeredOtherUser?.id;
-          if (targetUserId && targetUserId !== 'guest_user') {
-            const matchedUser = allRegisteredUsers.find((u) => u.id === targetUserId);
-            const nextBal = (Number(matchedUser?.walletBalance || 0) || 0) + paidAmount;
-            setDoc(doc(db, 'users', targetUserId), { walletBalance: nextBal }, { merge: true }).catch(() => {});
-            setDoc(
-              doc(db, 'wallets', targetUserId),
-              { userId: targetUserId, balance: nextBal, updatedAt: new Date().toISOString() },
-              { merge: true }
-            ).catch(() => {});
-          }
-        }
-      }
-
-      if (pendingReq) {
-        const creditedAt = new Date().toISOString();
-        setWalletTopups((prev) => {
-          const updated = prev.map((r) =>
-            r.id === pendingReq.id
-              ? { ...r, status: 'CREDITED' as const, creditedAt, verifiedSmsText: text }
-              : r
-          );
-          try {
-            localStorage.setItem('ub_wallet_topups', JSON.stringify(updated));
-          } catch {}
-          return updated;
-        });
-        setDoc(
-          doc(db, 'wallet_topups', pendingReq.id),
-          { status: 'CREDITED', creditedAt, verifiedSmsText: text },
-          { merge: true }
-        ).catch(() => {});
-      }
-
-      recordLivePaymentTelemetry({
-        smsText: text,
-        sender: sender || matchedBankWord,
-        confirmedReference: formattedOrderRef || refText,
-      });
-
-      const displayTopupName = pendingReq?.userName || topupNameInSms || senderName || 'Customer';
-      const logMsg = `✅ ${displayTopupName} - WALLET TOPUP - CREDITED - R${paidAmount.toFixed(0)}`;
-      const logItem = {
-        id: `sms_${Date.now()}`,
-        text,
-        time: new Date().toLocaleTimeString(),
-        status: logMsg,
-      };
-      setTymebankSmsLogs((prev) => {
-        const updated = [logItem, ...prev.slice(0, 49)];
-        try {
-          localStorage.setItem('tymebank_sms_logs', JSON.stringify(updated));
-        } catch {}
-        return updated;
-      });
-
-      return {
-        success: true,
-        message: logMsg,
-        data: {
-          paidAmount,
-          customerName: displayTopupName,
-          reference: refText,
-          type: 'TOPUP',
-        },
-      };
-    }
-
-    // 3. Match an active WAITING FOR PAYMENT ticket directly by Reference, Ticket ID, or Sender Name + Exact Amount
-    const matchedWaitingTicket = findMatchingWaitingTicket(tickets, {
-      paidAmount,
-      senderName,
-      reference: refText,
-    });
-
-    if (matchedWaitingTicket) {
-      const confirmedRefVal =
-        formattedOrderRef ||
-        matchedWaitingTicket.ticketId ||
-        matchedWaitingTicket.bandCode ||
-        refText;
-      void updateTicketPaymentStatus(matchedWaitingTicket.id, 'PAID', refText, text);
-      recordLivePaymentTelemetry({
-        smsText: text,
-        sender: sender || matchedBankWord,
-        confirmedReference: confirmedRefVal,
-      });
-
-      const custName =
-        matchedWaitingTicket.attendeeName ||
-        matchedWaitingTicket.customerName ||
-        senderName ||
-        'Customer';
-      const tierLabel = matchedWaitingTicket.ticketTier || 'General';
-      const logMsg = `✅ ${custName} - ${tierLabel} - PAID - R${paidAmount.toFixed(0)} - ${matchedWaitingTicket.eventTitle} ${matchedWaitingTicket.eventDate}`;
-      const logItem = {
-        id: `sms_${Date.now()}`,
-        text,
-        time: new Date().toLocaleTimeString(),
-        status: logMsg,
-      };
-
-      setTymebankSmsLogs((prev) => {
-        const updated = [logItem, ...prev.slice(0, 49)];
-        try {
-          localStorage.setItem('tymebank_sms_logs', JSON.stringify(updated));
-        } catch {}
-        return updated;
-      });
-
-      return {
-        success: true,
-        message: logMsg,
-        ticket: { ...matchedWaitingTicket, paymentStatus: 'PAID', verifiedSmsText: text },
-        data: {
-          paidAmount,
-          customerName: custName,
-          ticketType: tierLabel,
-          reference: confirmedRefVal,
-          eventTitle: matchedWaitingTicket.eventTitle,
-          eventDate: matchedWaitingTicket.eventDate,
-        },
-      };
-    }
-
-    // 4. Fallback: Match either "Universal Band - [Event Name]" or legacy [EventCode] [Name] [TicketType]
-    const refEventName = extractEventNameFromPayshapRef(refText);
-    let matchedEvent: EventItem | undefined;
-    let eventCodeInSms = '';
-    let customerNameInSms = senderName || 'Customer';
-    let ticketTypeInSms = '';
-
-    if (refEventName) {
-      const refEvLower = refEventName.toLowerCase();
-      matchedEvent =
-        events.find((ev) => String(ev.title || '').trim().toLowerCase() === refEvLower) ||
-        events.find((ev) => {
-          const evTitleLower = String(ev.title || '').trim().toLowerCase();
-          return evTitleLower && (evTitleLower.includes(refEvLower) || refEvLower.includes(evTitleLower));
-        });
-      if (!matchedEvent) {
-        return {
-          success: false,
-          message: `No waiting order or event found matching "${refText}".`,
-        };
-      }
-      eventCodeInSms = (matchedEvent.eventCode || matchedEvent.title.replace(/\s+/g, '').slice(0, 6)).toUpperCase();
-      customerNameInSms = senderName || currentUser?.fullName || currentUser?.name || 'Customer';
-    } else {
-      if (parts.length < 3) {
-        return {
-          success: false,
-          message: `No waiting order matched Bank Message "${matchedBankWord}" and Reference "${refText}".`,
-        };
-      }
-
-      eventCodeInSms = parts[0].toUpperCase();
-      customerNameInSms = parts.slice(1, parts.length - 1).join(' ');
-      ticketTypeInSms = lastPartUpper;
-
-      matchedEvent = events.find(
-        (ev) =>
-          (ev.eventCode && ev.eventCode.toUpperCase() === eventCodeInSms) ||
-          String(ev.title || '').replace(/\s+/g, '').slice(0, 6).toUpperCase() === eventCodeInSms
-      );
-
-      if (!matchedEvent) {
-        return {
-          success: false,
-          message: `No active event or WAITING FOR PAYMENT ticket found matching "${refText}".`,
-        };
-      }
-    }
-
-    // Get the prices for THAT event from the event definition
-    const ebPrice = parsePriceNumber(matchedEvent.earlyBirdPrice);
-    const genPrice = parsePriceNumber(matchedEvent.generalPrice || matchedEvent.price);
-    const vipPrice = parsePriceNumber(matchedEvent.vipPrice);
-    const kidsPrice = parsePriceNumber(matchedEvent.kidsPrice);
-    const vvipPrice = parsePriceNumber(matchedEvent.vvipPrice);
-
-    let matchedTier = '';
-    if (refEventName) {
-      if (ebPrice > 0 && Math.abs(paidAmount - ebPrice) < 1) {
-        matchedTier = 'Early Bird Pass';
-      } else if (genPrice > 0 && Math.abs(paidAmount - genPrice) < 1) {
-        matchedTier = 'General Admission';
-      } else if (vipPrice > 0 && Math.abs(paidAmount - vipPrice) < 1) {
-        matchedTier = 'VIP Pass';
-      } else if (kidsPrice > 0 && Math.abs(paidAmount - kidsPrice) < 1) {
-        matchedTier = 'Kids Pass';
-      } else if (vvipPrice > 0 && Math.abs(paidAmount - vvipPrice) < 1) {
-        matchedTier = 'VVIP Pass';
-      } else {
-        return {
-          success: false,
-          message: `Amount R${paidAmount.toFixed(2)} does not match any ticket price for "${matchedEvent.title}".`,
-        };
-      }
-    } else if ((ticketTypeInSms.includes('EARLYBIRD') || ticketTypeInSms === 'EARLY') && ebPrice > 0 && Math.abs(paidAmount - ebPrice) < 1) {
-      matchedTier = 'Early Bird Pass';
-    } else if (ticketTypeInSms.includes('VVIP') && vvipPrice > 0 && Math.abs(paidAmount - vvipPrice) < 1) {
-      matchedTier = 'VVIP Pass';
-    } else if (ticketTypeInSms.includes('GENERAL') && genPrice > 0 && Math.abs(paidAmount - genPrice) < 1) {
-      matchedTier = 'General';
-    } else if (ticketTypeInSms.includes('VIP') && vipPrice > 0 && Math.abs(paidAmount - vipPrice) < 1) {
-      matchedTier = 'VIP';
-    } else if (ticketTypeInSms.includes('KIDS') && kidsPrice > 0 && Math.abs(paidAmount - kidsPrice) < 1) {
-      matchedTier = 'Kids';
-    } else {
-      return {
-        success: false,
-        message: `Amount R${paidAmount.toFixed(2)} does not match ${ticketTypeInSms} ticket price for "${matchedEvent.title}".`,
-      };
-    }
-
-    let targetTicket = tickets.find(
-      (t) =>
-        t.eventId === matchedEvent!.id &&
-        ((t.payshapReference?.toLowerCase() === refText.toLowerCase() &&
-          (!senderName ||
-            (t.attendeeName || t.customerName || '').toLowerCase().includes(senderName.toLowerCase()))) ||
-          t.customerName.toLowerCase() === customerNameInSms.toLowerCase())
-    );
-
-    const nowIso = new Date().toISOString();
-    if (targetTicket) {
-      void updateTicketPaymentStatus(targetTicket.id, 'PAID', refText, text);
-    } else {
-      const priorCustomerTicket = tickets.find(
-        (t) =>
-          t.customerName?.toLowerCase() === customerNameInSms.toLowerCase() &&
-          (t.customerQrId || (t.userId && t.userId !== 'guest_user'))
-      );
-      const isCurrentUserMatch =
-        currentUser?.isRegistered &&
-        (currentUser.fullName?.toLowerCase() === customerNameInSms.toLowerCase() ||
-          currentUser.name?.toLowerCase() === customerNameInSms.toLowerCase());
-      const resolvedUserId =
-        priorCustomerTicket?.userId || (isCurrentUserMatch ? currentUser.id : 'guest_user');
-      const matchedCustQrId =
-        priorCustomerTicket?.customerQrId ||
-        resolveCustomerQrId(
-          resolvedUserId,
-          isCurrentUserMatch ? currentUser.customerQrId : undefined
-        );
-
-      const randomFiveDigits = Math.floor(10000 + Math.random() * 90000);
-      const uniqueTicketCode = `UB-${randomFiveDigits}`;
-      targetTicket = {
-        id: uniqueTicketCode,
-        ticketId: uniqueTicketCode,
-        eventId: matchedEvent.id,
-        storeId: matchedEvent.storeId || '',
-        storeName: 'Universal Band Event',
-        userId: resolvedUserId,
-        customerQrId: matchedCustQrId || undefined,
-        eventName: matchedEvent.title,
-        eventTitle: matchedEvent.title,
-        eventDate: matchedEvent.date,
-        eventLocation: matchedEvent.location || 'Pretoria',
-        price: `R${paidAmount.toFixed(2)}`,
-        ticketTier: matchedTier,
-        tierName: matchedTier,
-        attendeeName: customerNameInSms,
-        customerName: customerNameInSms,
-        qrCode: matchedCustQrId || uniqueTicketCode,
-        bandCode: uniqueTicketCode,
-        status: 'valid',
-        attendanceStatus: 'OUTSIDE',
-        purchaseDate: nowIso,
-        createdAt: nowIso,
-        paymentStatus: 'PAID',
-        paidAt: nowIso,
-        payshapReference: refText,
-        verifiedSmsText: text,
-      };
-      setTickets((prev) => [targetTicket!, ...prev]);
-      notifyTicketLifecycleEvent(targetTicket, 'paid');
-      setDoc(doc(db, 'tickets', targetTicket.id), cleanForFirestore(targetTicket)).catch(console.warn);
-    }
-
-    recordLivePaymentTelemetry({
-      smsText: text,
-      sender: sender || matchedBankWord,
-      confirmedReference: targetTicket.ticketId || targetTicket.bandCode || refText,
-    });
-
-    const logMsg = `✅ ${customerNameInSms} - ${matchedTier} - PAID - R${paidAmount.toFixed(0)} - ${matchedEvent.title} ${matchedEvent.date}`;
-    const logItem = {
-      id: `sms_${Date.now()}`,
-      text: text,
-      time: new Date().toLocaleTimeString(),
-      status: logMsg,
+    const alarmData: ActivePaymentAlarm = {
+      id: `alarm_${nowMs}`,
+      amount: parsed.amount,
+      numericAmount: parsed.numericAmount,
+      customer: parsed.senderName,
+      rawSms: parsed.rawText,
+      dateMs: nowMs,
     };
 
+    setActivePaymentAlarm(alarmData);
+    startLoopingPaymentAlarm(newOrderSoundRef.current);
+    void triggerBackgroundNotification(
+      'PAYMENT RECEIVED - Check SMS',
+      `${parsed.amount} from ${parsed.senderName}`,
+      'payment-received-alarm'
+    );
+
+    const logMsg = `ALARM RINGING — ${parsed.amount} from ${parsed.senderName} — Manual approval required`;
+    const logItem = {
+      id: `sms_${nowMs}`,
+      text: parsed.rawText,
+      time: new Date(nowMs).toLocaleTimeString(),
+      status: logMsg,
+    };
     setTymebankSmsLogs((prev) => {
       const updated = [logItem, ...prev.slice(0, 49)];
       try {
@@ -3728,15 +3448,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return {
       success: true,
       message: logMsg,
-      ticket: targetTicket,
       data: {
-        paidAmount,
-        customerName: customerNameInSms,
-        eventCode: eventCodeInSms,
-        ticketType: matchedTier,
-        reference: targetTicket.ticketId || targetTicket.bandCode || refText,
-        eventTitle: matchedEvent.title,
-        eventDate: matchedEvent.date,
+        paidAmount: parsed.numericAmount,
+        amountLabel: parsed.amount,
+        customerName: parsed.senderName,
       },
     };
   };
@@ -3750,13 +3465,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     tymebankSmsLogsRef.current = tymebankSmsLogs;
   }, [tymebankSmsLogs]);
-
-  const hasPendingSmsPaymentsRef = useRef(false);
-  useEffect(() => {
-    const hasPendingTopup = walletTopups.some((t) => t.status === 'PENDING_PAYMENT');
-    const hasPendingTicket = tickets.some((t) => isTicketWaitingPayment(t));
-    hasPendingSmsPaymentsRef.current = hasPendingTopup || hasPendingTicket;
-  }, [walletTopups, tickets]);
 
   const processedSmsKeysRef = useRef<Set<string>>(
     (() => {
@@ -3789,19 +3497,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const syncNativeBackgroundSmsState = async () => {
     if (typeof window === 'undefined' || !Capacitor.isNativePlatform()) return;
     try {
-      const bgState = await getBackgroundSmsState();
+      const [bgState, ringingNow] = await Promise.all([
+        getBackgroundSmsState(),
+        isNativePaymentAlarmActive(),
+      ]);
       if (!bgState) return;
       setSmsPermissionActive(Boolean(bgState.smsGranted));
       localStorage.setItem('tymebank_sms_permission', bgState.smsGranted ? 'true' : 'false');
 
-      if (bgState.lastPaymentSmsText && (!lastPaymentSmsText || bgState.lastPaymentSmsAt > lastPaymentSmsAt)) {
+      if (bgState.lastPaymentSmsText && (!lastPaymentSmsText || bgState.lastPaymentSmsAt >= lastPaymentSmsAt)) {
         setLastPaymentSmsText(bgState.lastPaymentSmsText);
         setLastPaymentSmsSender(bgState.lastPaymentSmsSender || '');
         setLastPaymentSmsAt(bgState.lastPaymentSmsAt || '');
+        if (bgState.lastPaymentAmount) {
+          setLastPaymentAmount(bgState.lastPaymentAmount);
+        }
         try {
           localStorage.setItem('ub_last_payment_sms_text', bgState.lastPaymentSmsText);
           localStorage.setItem('ub_last_payment_sms_sender', bgState.lastPaymentSmsSender || '');
           localStorage.setItem('ub_last_payment_sms_at', bgState.lastPaymentSmsAt || '');
+          if (bgState.lastPaymentAmount) {
+            localStorage.setItem('ub_last_payment_amount', bgState.lastPaymentAmount);
+          }
         } catch {}
       }
       if (bgState.lastConfirmedReference) {
@@ -3810,9 +3527,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           localStorage.setItem('ub_last_confirmed_reference', bgState.lastConfirmedReference);
         } catch {}
       }
+
+      if (ringingNow || bgState.alarmActive) {
+        const parsedFallback = checkIsTymeBankPaymentAlertSms(
+          bgState.lastPaymentSmsText || '',
+          bgState.lastPaymentSmsSender || 'TymeBank'
+        );
+        setActivePaymentAlarm({
+          id: `native_alarm_${Date.now()}`,
+          amount: bgState.lastPaymentAmount || parsedFallback.amount || 'Payment',
+          numericAmount: parsedFallback.numericAmount,
+          customer: bgState.lastPaymentSmsSender || parsedFallback.senderName || 'Customer',
+          rawSms: bgState.lastPaymentSmsText || '',
+          dateMs: bgState.lastPaymentSmsAt ? Date.parse(bgState.lastPaymentSmsAt) || Date.now() : Date.now(),
+        });
+      }
     } catch {}
   };
 
+  /**
+   * Scans real phone SMS inbox ONLY for telemetry / payment alarm detection.
+   * NEVER auto-approves tickets or wallet balances.
+   */
   const scanRealSmsInbox = async (options?: {
     promptIfNeeded?: boolean;
     sinceMs?: number;
@@ -3845,12 +3581,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { granted: false, scannedCount: 0, matchedCount: 0, results: [] };
       }
 
-      if (!options?.promptIfNeeded && localStorage.getItem('ub_sms_auto_detect_enabled') === 'false') {
-        return { granted: true, scannedCount: 0, matchedCount: 0, results: [] };
-      }
-
-      const sinceMs = options?.sinceMs ?? Date.now() - 48 * 60 * 60 * 1000;
-      const inbox = await readRealSmsInbox({ limit: 60, sinceMs });
+      const sinceMs = options?.sinceMs ?? Date.now() - 24 * 60 * 60 * 1000;
+      const inbox = await readRealSmsInbox({ limit: 50, sinceMs });
       if (!inbox.granted) {
         setSmsPermissionActive(false);
         return { granted: false, scannedCount: 0, matchedCount: 0, results: [] };
@@ -3859,8 +3591,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const ordered = [...inbox.messages].sort((a, b) => a.dateMs - b.dateMs);
       const results: { success: boolean; message: string; data?: any }[] = [];
       let matchedCount = 0;
-      const activeBankFilter = paymentBankMessageRef.current || 'TymeBank';
-      const activeRefFormat = paymentReferenceFormatRef.current || 'UB-';
+      const nowMs = Date.now();
 
       for (const msg of ordered) {
         const smsKey = `sms_${msg.id}_${msg.dateMs}`;
@@ -3873,31 +3604,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           continue;
         }
 
-        const matchedBank = doesSmsMatchBankMessage(msg.body, msg.sender, activeBankFilter);
-        if (!matchedBank) {
-          markSmsKeyProcessed(smsKey, contentKey);
+        const parsed = checkIsTymeBankPaymentAlertSms(msg.body, msg.sender);
+        markSmsKeyProcessed(smsKey, contentKey);
+        if (!parsed.isPayment) {
           continue;
         }
 
-        const matchedOrderRef = extractReferenceByFormat(msg.body, activeRefFormat);
-        const bodyLower = String(msg.body || '').toLowerCase();
-        const looksLikeBankCredit =
-          Boolean(matchedOrderRef) ||
-          (bodyLower.includes('you received') && bodyLower.includes('reference'));
-
-        if (!looksLikeBankCredit) {
-          markSmsKeyProcessed(smsKey, contentKey);
-          continue;
-        }
-
-        const res = processTymebankSmsRef.current(msg.body, msg.sender);
-        if (res.success) {
-          markSmsKeyProcessed(smsKey, contentKey);
-          matchedCount += 1;
-          results.push({ success: true, message: res.message, data: res.data });
-          await new Promise((resolve) => setTimeout(resolve, 90));
+        // Only ring alarm automatically for recent incoming SMS (within last 10 mins) or manual check
+        const isRecent = nowMs - (msg.dateMs || 0) <= 10 * 60 * 1000;
+        if (isRecent || options?.promptIfNeeded) {
+          const res = processTymebankSmsRef.current(msg.body, msg.sender);
+          if (res.success) {
+            matchedCount += 1;
+            results.push({ success: true, message: res.message, data: res.data });
+          }
         } else {
-          results.push({ success: false, message: res.message, data: res.data });
+          // Historical SMS found during inbox read: log quietly without auto-approving or blaring old alarms
+          recordLivePaymentTelemetry({
+            smsText: parsed.rawText,
+            sender: parsed.senderName || msg.sender,
+            amount: parsed.amount,
+          });
+          matchedCount += 1;
+          results.push({
+            success: true,
+            message: `Found SMS: ${parsed.amount} from ${parsed.senderName}`,
+            data: { paidAmount: parsed.numericAmount, amountLabel: parsed.amount, customerName: parsed.senderName },
+          });
         }
       }
 
@@ -3917,17 +3650,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scanRealSmsInboxRef.current = scanRealSmsInbox;
   });
 
-  // Real Android SMS Inbox Scanner + Live SMS_RECEIVED Broadcast Receiver (read-only)
+  // Real Android SMS Broadcast Receiver + Native Payment Alarm Event Subscriptions
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     let stopNativeSms: (() => void) | null = null;
+    let stopAlarmSub: (() => void) | null = null;
     let appStateHandle: { remove: () => Promise<void> } | null = null;
-    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    const handleNotificationRoute = (route: string) => {
+      const cleanRoute = String(route || '').trim();
+      if (!cleanRoute) return;
+      const canAccessAdmin =
+        isAdminSessionActive() && sessionStorage.getItem('ub_admin_5locks_passed') === 'true';
+      if (canAccessAdmin) {
+        setActiveModal(null);
+        navigateTo(cleanRoute);
+      } else {
+        try {
+          sessionStorage.setItem('ub_pending_admin_route', cleanRoute);
+        } catch {}
+        navigateTo('/login');
+      }
+    };
 
     const handleSmsMessage = (msg: SmsInboxMessage) => {
       try {
-        if (localStorage.getItem('ub_sms_auto_detect_enabled') === 'false') return;
         const smsKey = `sms_${msg.id}_${msg.dateMs}`;
         const contentKey = `norm_${String(msg.sender || '').trim().toLowerCase()}_${String(msg.body || '').trim()}_${Math.floor((msg.dateMs || 0) / 15000)}`;
         if (processedSmsKeysRef.current.has(smsKey) || processedSmsKeysRef.current.has(contentKey)) {
@@ -3969,12 +3717,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.addEventListener('tymebankSmsReceived', handleWindowSmsEvent as EventListener);
 
     if (Capacitor.isNativePlatform()) {
+      void configureNativePaymentAlarm({
+        mode: newOrderSoundRef.current.mode,
+        presetId: newOrderSoundRef.current.presetId,
+        volume: newOrderSoundRef.current.volume ?? 1,
+        customDataUrl: newOrderSoundRef.current.customDataUrl,
+      });
+
       void (async () => {
         await syncNativeBackgroundSmsState();
+        const pendingRoute = await consumePendingNotificationRoute();
+        if (pendingRoute) {
+          handleNotificationRoute(pendingRoute);
+        }
+
+        stopAlarmSub = await subscribeNativePaymentAlarmEvents({
+          onAlarm: (data) => {
+            const amt = data.amount || 'Payment';
+            const cust = data.customer || data.sender || 'Customer';
+            const raw = data.body || '';
+            recordLivePaymentTelemetry({
+              smsText: raw,
+              sender: cust,
+              amount: amt,
+            });
+            setActivePaymentAlarm({
+              id: data.id || `alarm_${Date.now()}`,
+              amount: amt,
+              customer: cust,
+              rawSms: raw,
+              dateMs: data.dateMs || Date.now(),
+            });
+            startLoopingPaymentAlarm(newOrderSoundRef.current);
+          },
+          onStopped: () => {
+            stopLoopingPaymentAlarm();
+            setActivePaymentAlarm(null);
+          },
+          onNavigate: (route) => {
+            handleNotificationRoute(route);
+          },
+        });
+
         const granted = await checkSmsPermissionGranted();
         setSmsPermissionActive(granted);
         if (granted) {
-          void scanRealSmsInboxRef.current({ promptIfNeeded: false });
           stopNativeSms = await startNativeSmsListener(handleSmsMessage);
         }
         try {
@@ -3982,37 +3769,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (isActive) {
               void (async () => {
                 await syncNativeBackgroundSmsState();
+                const routeFromNotif = await consumePendingNotificationRoute();
+                if (routeFromNotif) {
+                  handleNotificationRoute(routeFromNotif);
+                }
                 const nowGranted = await checkSmsPermissionGranted();
                 setSmsPermissionActive(nowGranted);
-                if (nowGranted) {
-                  if (!stopNativeSms) {
-                    stopNativeSms = await startNativeSmsListener(handleSmsMessage);
-                  }
-                  void scanRealSmsInboxRef.current({ promptIfNeeded: false });
+                if (nowGranted && !stopNativeSms) {
+                  stopNativeSms = await startNativeSmsListener(handleSmsMessage);
                 }
               })();
             }
           });
         } catch {}
       })();
-
-      pollInterval = setInterval(() => {
-        if (hasPendingSmsPaymentsRef.current || isAdminSessionActive()) {
-          void scanRealSmsInboxRef.current({ promptIfNeeded: false });
-        }
-      }, 5000);
     }
 
     return () => {
       window.removeEventListener('onSMSArrive', handleWindowSmsEvent as EventListener);
       window.removeEventListener('tymebankSmsReceived', handleWindowSmsEvent as EventListener);
       if (stopNativeSms) stopNativeSms();
+      if (stopAlarmSub) stopAlarmSub();
       if (appStateHandle) void appStateHandle.remove();
-      if (pollInterval) clearInterval(pollInterval);
     };
   }, []);
 
-  // Auto-prompt Admin for Android SMS permission when opening Admin app & sync native background SMS config
+  // Auto-prompt Admin for Android SMS + Notification permissions when entering Admin views
   const adminSmsAutoPromptedRef = useRef<boolean>(false);
   useEffect(() => {
     if (typeof window === 'undefined' || !Capacitor.isNativePlatform() || !isAppReady) return;
@@ -4039,9 +3821,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         adminSmsAutoPromptedRef.current = true;
         const reqRes = await ensureSmsPermission();
         setSmsPermissionActive(reqRes.granted);
-        if (reqRes.granted) {
-          void scanRealSmsInboxRef.current({ promptIfNeeded: false });
-        }
+        await ensureNotificationsPermission().catch(() => {});
       }
     })();
   }, [isAppReady, currentUser?.role, currentUser?.email, currentRoute, paymentBankMessage, paymentReferenceFormat]);
@@ -4280,20 +4060,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const curBal = Number(localStorage.getItem('wallet_balance') || 0);
     localStorage.setItem('wallet_balance', String(curBal));
     localStorage.setItem('ub_admin_session', 'true');
-    setCurrentUser((prev) => ({
-      ...prev,
+    sessionStorage.setItem('ub_admin_5locks_passed', 'true');
+    sessionStorage.setItem('ub_app_active', 'true');
+
+    const adminUser: UserProfile = pendingAdminAuthUser || {
+      ...currentUser,
       role: 'Admin',
       walletBalance: curBal,
       assignedStoreId: '',
       assignedStoreName: '',
-    }));
+      isRegistered: true,
+    };
+    adminUser.role = 'Admin';
+    adminUser.isRegistered = true;
+    setCurrentUser(adminUser);
+    localStorage.setItem('ub_user_profile', JSON.stringify(adminUser));
+    localStorage.setItem('ub_has_registered', 'true');
     setUserWalletDoc((prev) => ({
       ...prev,
       balance: curBal,
     }));
     setIsAdminSecurityModalOpen(false);
-    setActiveModal('admin-console');
-    navigateTo('/');
+    let pendingRoute = '';
+    try {
+      pendingRoute = sessionStorage.getItem('ub_pending_admin_route') || '';
+      if (pendingRoute) sessionStorage.removeItem('ub_pending_admin_route');
+    } catch {}
+    if (pendingRoute) {
+      setActiveModal(null);
+      navigateTo(pendingRoute);
+    } else {
+      setActiveModal('admin-console');
+      navigateTo('/');
+    }
   };
 
   const wipeAndReset = async () => {
@@ -5355,7 +5154,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const isAdmin = isEmailAdmin(res.user.email || targetEmail) || isDocAdmin;
         if (isAdmin) {
           addAuthorizedAdminEmail(res.user.email || targetEmail);
-          localStorage.setItem('ub_admin_session', 'true');
+          localStorage.removeItem('ub_admin_session');
+          sessionStorage.removeItem('ub_admin_5locks_passed');
         }
 
         // Verification check for non-admin accounts (allow if admin-approved or Firestore emailVerified)
@@ -5461,7 +5261,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch (e) {}
 
         if (isAdmin) {
-          setCurrentUser(loggedInUser);
+          setPendingAdminAuthUser(loggedInUser);
           setIsAdminSecurityModalOpen(true);
           return {
             success: false,
@@ -7979,6 +7779,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsAdminSecurityModalOpen,
         openAdminLoginFlow,
         handleAdminSecuritySuccess,
+        cancelAdminLogin,
+        terminateAdminSession,
         wipeAndReset,
         menuFood,
         menuAlcohol,
@@ -8016,6 +7818,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         buyTicket,
         buyTicketWithPayShap,
         updateTicketPaymentStatus,
+        confirmTicketPaymentManually,
+        confirmMallOrderPaymentManually,
         markPayshapRequestSent,
         processTymebankSms,
         scanRealSmsInbox,
@@ -8026,12 +7830,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         lastPaymentSmsText,
         lastPaymentSmsSender,
         lastPaymentSmsAt,
+        lastPaymentAmount,
         lastConfirmedReference,
         smsPermissionActive,
         updatePaymentConfirmationSettings,
         requestAdminSmsPermissionPopup,
         newOrderSound,
         updateNewOrderSound,
+        activePaymentAlarm,
+        dismissPaymentAlarm,
+        testPaymentAlarm,
         supportRingEnabled,
         setSupportRingEnabled,
         supportChats,

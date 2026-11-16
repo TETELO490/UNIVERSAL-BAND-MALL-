@@ -33,7 +33,16 @@ export const DiscoverPage: React.FC = () => {
   );
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isAdmin = isUserLoggedIn && (roleLower === 'admin' || isAuthorizedAdminEmail(currentUser?.email) || localStorage.getItem('ub_admin_session') === 'true');
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+  const isAdmin =
+    isUserLoggedIn &&
+    has5LocksPassed &&
+    (roleLower === 'admin' ||
+      isAuthorizedAdminEmail(currentUser?.email) ||
+      localStorage.getItem('ub_admin_session') === 'true');
   const isPromoter = isUserLoggedIn && (roleLower === 'promoter' || roleLower === 'event organiser');
 
   const handleGetTicket = (e: React.MouseEvent, event: EventItem) => {
@@ -68,15 +77,17 @@ export const DiscoverPage: React.FC = () => {
 
       {/* Featured Universal Band Hero Banner */}
       <div className="mb-6 rounded-3xl overflow-hidden border border-[#C9A86A]/30 bg-black shadow-2xl relative group">
-        {/* Quick action button to change brand logo / banner */}
-        <button
-          onClick={() => navigateTo('/admin/logo-settings')}
-          className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/80 hover:bg-black text-[#C9A86A] border border-[#C9A86A]/60 text-xs font-bold backdrop-blur-md shadow-xl active:scale-95 transition-all cursor-pointer"
-          title="Change App Logo & Banner"
-        >
-          <Camera className="w-3.5 h-3.5 text-[#C9A86A]" />
-          <span>Change Logo</span>
-        </button>
+        {/* Quick action button to change brand logo / banner (ADMIN ONLY) */}
+        {isAdmin && (
+          <button
+            onClick={() => navigateTo('/admin/logo-settings')}
+            className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/80 hover:bg-black text-[#C9A86A] border border-[#C9A86A]/60 text-xs font-bold backdrop-blur-md shadow-xl active:scale-95 transition-all cursor-pointer"
+            title="Change App Logo & Banner"
+          >
+            <Camera className="w-3.5 h-3.5 text-[#C9A86A]" />
+            <span>Change Logo</span>
+          </button>
+        )}
 
         <div className="aspect-[16/9] w-full overflow-hidden relative bg-black flex items-center justify-center p-4">
           <img

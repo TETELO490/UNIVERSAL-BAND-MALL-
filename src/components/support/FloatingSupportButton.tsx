@@ -23,8 +23,14 @@ export const FloatingSupportButton: React.FC = () => {
   );
 
   const roleLower = (currentUser?.role || '').toLowerCase();
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+
   const isAdmin =
     isUserLoggedIn &&
+    has5LocksPassed &&
     (roleLower === 'admin' ||
       isAuthorizedAdminEmail(currentUser?.email) ||
       localStorage.getItem('ub_admin_session') === 'true');

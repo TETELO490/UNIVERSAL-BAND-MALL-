@@ -65,6 +65,7 @@ export const AppLockPage: React.FC = () => {
 
   // 3. Pattern State
   const [drawPattern, setDrawPattern] = useState<number[]>([]);
+  const [patternAttemptsLeft, setPatternAttemptsLeft] = useState<number>(3);
 
   const triggerError = (msg: string) => {
     setShake(true);
@@ -178,9 +179,16 @@ export const AppLockPage: React.FC = () => {
 
     const matched = await verifyPatternLock(drawPattern, currentUser?.email);
     if (matched) {
+      setPatternAttemptsLeft(3);
       executeUnlock();
     } else {
-      triggerError('Incorrect pattern. Please try again.');
+      const remaining = patternAttemptsLeft - 1;
+      setPatternAttemptsLeft(remaining);
+      if (remaining > 0) {
+        triggerError(`Wrong pattern, ${remaining} attempt${remaining === 1 ? '' : 's'} left`);
+      } else {
+        triggerError('Maximum attempts reached. Switch to PIN or reset pattern.');
+      }
       setDrawPattern([]);
     }
   };
@@ -497,6 +505,17 @@ export const AppLockPage: React.FC = () => {
                 Verify Pattern
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                switchMethod('pin');
+                triggerError('Enter 6-digit PIN to unlock or reset pattern in settings.');
+              }}
+              className="w-full text-center text-[11px] text-[#FACC15] hover:underline font-bold pt-1 cursor-pointer block"
+            >
+              Forgot Pattern? Switch to PIN
+            </button>
           </div>
         )}
 

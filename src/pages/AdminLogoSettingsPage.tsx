@@ -4,6 +4,7 @@ import { db, storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { ensurePhotosPermission } from '../utils/nativePermissions';
+import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import {
   ArrowLeft,
   Upload,
@@ -20,6 +21,7 @@ import {
   Eye,
   Smartphone,
   ExternalLink,
+  Shield,
 } from 'lucide-react';
 
 /**
@@ -101,7 +103,47 @@ const optimizeImageSafely = (file: File, maxDim = 512, quality = 0.85): Promise<
 };
 
 export const AdminLogoSettingsPage: React.FC = () => {
-  const { customLogoUrl, updateCustomLogo, currentUser, navigateTo } = useApp();
+  const { customLogoUrl, updateCustomLogo, currentUser, firebaseUser, navigateTo } = useApp();
+
+  const isUserLoggedIn = Boolean(
+    firebaseUser ||
+      (currentUser?.isRegistered && currentUser?.id !== 'guest_user') ||
+      localStorage.getItem('ub_admin_session') === 'true'
+  );
+
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+
+  const isAdmin =
+    isUserLoggedIn &&
+    has5LocksPassed &&
+    (roleLower === 'admin' ||
+      isAuthorizedAdminEmail(currentUser?.email) ||
+      localStorage.getItem('ub_admin_session') === 'true');
+
+  if (!isAdmin) {
+    return (
+      <div className="pb-24 pt-6 px-4 max-w-md mx-auto">
+        <div className="bg-[#1A1A1A] border border-rose-500/30 rounded-2xl p-6 text-center space-y-3">
+          <Shield className="w-10 h-10 text-rose-400 mx-auto" />
+          <h1 className="text-lg font-extrabold text-white">Admin Access Only</h1>
+          <p className="text-xs text-gray-400">
+            Only the administrator can access logo settings and branding.
+          </p>
+          <button
+            onClick={() => navigateTo('/')}
+            className="w-full bg-[#FACC15] text-black font-extrabold py-2.5 rounded-xl text-xs hover:bg-yellow-400 transition cursor-pointer"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [optimizedDataUrl, setOptimizedDataUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>(

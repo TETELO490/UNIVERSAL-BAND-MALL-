@@ -39,11 +39,15 @@ export const Header: React.FC = () => {
   const isAuthPage = currentRoute === '/register' || currentRoute === '/login' || currentRoute === '/signup' || currentRoute === '/signin';
   const isLoggedIn = Boolean(
     firebaseUser ||
-    (currentUser?.isRegistered && currentUser?.id !== 'guest_user') ||
-    localStorage.getItem('ub_admin_session') === 'true'
+    (currentUser?.isRegistered && currentUser?.id !== 'guest_user')
   );
 
-  const isAdmin = isLoggedIn && (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email));
+  const isAdmin = Boolean(
+    isLoggedIn &&
+    (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+    localStorage.getItem('ub_admin_session') === 'true' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
+  );
   const isPromoter = isLoggedIn && currentUser?.role === 'Promoter';
   const isWorker = isLoggedIn && (currentUser?.role === 'Worker' || currentUser?.role === 'Staff');
 

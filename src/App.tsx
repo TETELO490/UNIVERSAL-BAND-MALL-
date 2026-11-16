@@ -7,6 +7,7 @@ import { WelcomeBanner } from './components/WelcomeBanner';
 import { LoadingScreen } from './components/LoadingScreen';
 import { FloatingSupportButton } from './components/support/FloatingSupportButton';
 import { PermissionNeededNotice } from './components/PermissionNeededNotice';
+import { PaymentAlarmOverlay } from './components/PaymentAlarmOverlay';
 import { isAuthorizedAdminEmail } from './utils/cryptoHelper';
 
 // Statically import the default landing page for immediate instant rendering
@@ -131,11 +132,15 @@ const AppContent: React.FC = () => {
 
   const isUserLoggedIn = Boolean(
     firebaseUser ||
-    (currentUser?.isRegistered && currentUser?.id !== 'guest_user') ||
-    localStorage.getItem('ub_admin_session') === 'true'
+    (currentUser?.isRegistered && currentUser?.id !== 'guest_user')
   );
 
-  const isAdmin = isUserLoggedIn && (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email));
+  const isAdmin = Boolean(
+    isUserLoggedIn &&
+    (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+    localStorage.getItem('ub_admin_session') === 'true' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
+  );
   const isPromoter = isUserLoggedIn && currentUser?.role === 'Promoter';
   const isStaff = isAdmin || isPromoter;
 
@@ -264,7 +269,13 @@ const AppContent: React.FC = () => {
       currentRoute === '/change-logo' ||
       currentRoute === '/branding'
     ) {
-      return <AdminLogoSettingsPage />;
+      return isAdmin ? (
+        <AdminLogoSettingsPage />
+      ) : (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Access Denied - Admin privileges required.
+        </div>
+      );
     }
     if (
       currentRoute === '/admin/icon-settings' ||
@@ -273,7 +284,13 @@ const AppContent: React.FC = () => {
       currentRoute === '/icon-settings' ||
       currentRoute === '/change-icon'
     ) {
-      return <AppIconSettingsPage />;
+      return isAdmin ? (
+        <AppIconSettingsPage />
+      ) : (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Access Denied - Admin privileges required.
+        </div>
+      );
     }
 
     // 6. Protected User Account routes
@@ -406,6 +423,9 @@ const AppContent: React.FC = () => {
 
       {/* Real System Permission Denied Dialog + Open Settings */}
       <PermissionNeededNotice />
+
+      {/* Urgent Payment Alarm Overlay (loops until manually dismissed) */}
+      <PaymentAlarmOverlay />
     </div>
   );
 };

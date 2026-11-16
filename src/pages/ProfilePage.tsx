@@ -64,12 +64,16 @@ export const ProfilePage: React.FC = () => {
 
   const isUserLoggedIn = Boolean(
     firebaseUser ||
-    (currentUser?.isRegistered && currentUser?.id && currentUser?.id !== 'guest_user') ||
-    localStorage.getItem('ub_admin_session') === 'true'
+    (currentUser?.isRegistered && currentUser?.id && currentUser?.id !== 'guest_user')
   );
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isAdmin = isUserLoggedIn && (roleLower === 'admin' || isAuthorizedAdminEmail(currentUser?.email));
+  const isAdmin = Boolean(
+    isUserLoggedIn &&
+    (roleLower === 'admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+    localStorage.getItem('ub_admin_session') === 'true' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
+  );
   const isPromoter = isUserLoggedIn && roleLower === 'promoter';
   const isStaffOrAbove = isAdmin || isPromoter;
 
