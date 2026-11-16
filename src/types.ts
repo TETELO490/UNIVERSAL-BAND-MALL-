@@ -177,6 +177,10 @@ export interface NewOrderSoundConfig {
   volume?: number;
 }
 
+export interface BuyTicketAlarmConfig extends NewOrderSoundConfig {
+  enabled: boolean;
+}
+
 export interface ActivePaymentAlarm {
   id: string;
   amount: string;
@@ -184,6 +188,16 @@ export interface ActivePaymentAlarm {
   customer: string;
   rawSms: string;
   dateMs: number;
+}
+
+export interface ActiveBuyTicketAlarm {
+  id: string;
+  ticketId: string;
+  customer: string;
+  eventTitle: string;
+  tier: string;
+  price: string;
+  timestamp: string;
 }
 
 export interface AppNotificationBanner {

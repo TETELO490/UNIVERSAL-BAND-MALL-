@@ -22,6 +22,7 @@ import {
 } from '../../utils/multiLockSecurity';
 import { isAuthorizedAdminEmail } from '../../utils/cryptoHelper';
 import { Security } from '../multilock/Security';
+import { PatternGrid } from '../security/PatternGrid';
 
 export const AppLockSettingsModal: React.FC = () => {
   const { updatePin, lockApp, setActiveModal, currentUser } = useApp();
@@ -468,26 +469,13 @@ export const AppLockSettingsModal: React.FC = () => {
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-3 w-48 mx-auto p-4 bg-black/60 rounded-3xl border border-white/10">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((dot) => {
-                const isSelected = setupPattern.includes(dot);
-                const order = setupPattern.indexOf(dot);
-                return (
-                  <button
-                    key={dot}
-                    type="button"
-                    onClick={() => handlePatternDotClick(dot)}
-                    className={`w-11 h-11 rounded-full flex items-center justify-center font-bold text-xs transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#FACC15] text-black scale-110 shadow-lg shadow-yellow-400/30'
-                        : 'bg-white/10 text-gray-400 hover:bg-white/20'
-                    }`}
-                  >
-                    {isSelected && showPattern ? order + 1 : isSelected ? '•' : showPattern ? dot : '•'}
-                  </button>
-                );
-              })}
-            </div>
+            <PatternGrid
+              dots={[1, 2, 3, 4, 5, 6, 7, 8, 9]}
+              value={setupPattern}
+              onChange={setSetupPattern}
+              showNumbers={showPattern}
+              sizeClassName="w-52 h-52"
+            />
 
             <div className="flex gap-2">
               <button

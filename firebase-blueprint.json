@@ -536,6 +536,81 @@
           "description": "Last updated ISO timestamp"
         }
       }
+    },
+    "BuyTicketAlarm": {
+      "title": "BuyTicketAlarm",
+      "description": "Admin-only Buy Ticket Song Alarm configuration stored at settings/buyTicketAlarm",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the looping Admin buy ticket song alarm is enabled"
+        },
+        "soundType": {
+          "type": "string",
+          "description": "Preset chime or custom uploaded audio"
+        },
+        "customAudioUrl": {
+          "type": "string",
+          "description": "Base64 or audio URL of the uploaded song"
+        },
+        "customFileName": {
+          "type": "string",
+          "description": "Original filename of uploaded song"
+        },
+        "volume": {
+          "type": "number",
+          "description": "Playback volume from 0.1 to 1.0"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last updated ISO timestamp"
+        }
+      }
+    },
+    "AdminSecurity": {
+      "title": "AdminSecurity",
+      "description": "Cross-device 5-Lock Admin Security Vault keyed by Admin Account email",
+      "type": "object",
+      "properties": {
+        "accountEmail": {
+          "type": "string",
+          "description": "Lowercase Admin email address"
+        },
+        "pinHash": {
+          "type": "string"
+        },
+        "passwordHash": {
+          "type": "string"
+        },
+        "luckyNumberHash": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "patternHash": {
+          "type": "string"
+        },
+        "fingerprintCredentialId": {
+          "type": "string"
+        },
+        "fingerprintCredentialIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recoveryEmail": {
+          "type": "string"
+        },
+        "isSetupComplete": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "firestore": {
@@ -577,7 +652,11 @@
     },
     "/settings/{settingId}": {
       "schema": "SettingsPayshap",
-      "description": "Admin payment, notification sound, and LIVE SMS payment confirmation settings"
+      "description": "Admin payment, notification sound, buy ticket alarm, and LIVE SMS payment settings"
+    },
+    "/adminSecurity/{securityId}": {
+      "schema": "AdminSecurity",
+      "description": "Cross-device 5-Lock Admin Vault documents linked to Admin email"
     }
   }
 }

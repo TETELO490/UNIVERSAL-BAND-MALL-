@@ -31,6 +31,7 @@ import {
   MessageSquare,
   AlertCircle,
   ArrowLeft,
+  Volume2,
 } from 'lucide-react';
 import { TicketQrScannerModal } from './TicketQrScannerModal';
 import { VendorPosScannerModal } from './VendorPosScannerModal';
@@ -420,6 +421,23 @@ export const AdminConsoleModal: React.FC = () => {
             </div>
             <span className="text-[9px] font-black text-white group-hover:text-[#C9A86A] block truncate w-full">
               Brand Logo
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveModal(null);
+              navigateTo('/admin/buy-ticket-alarm');
+            }}
+            className="p-1.5 rounded-xl bg-amber-500/15 border border-amber-400/40 hover:border-amber-400 text-center transition cursor-pointer flex flex-col items-center justify-center gap-0.5 group"
+            title="Buy Ticket Alarm Song (Admin Only)"
+          >
+            <div className="w-6 h-6 rounded-lg bg-amber-400 text-black flex items-center justify-center shrink-0">
+              <Volume2 className="w-3.5 h-3.5 stroke-[2.5]" />
+            </div>
+            <span className="text-[9px] font-black text-white group-hover:text-amber-300 block truncate w-full">
+              Ticket Song
             </span>
           </button>
         </div>

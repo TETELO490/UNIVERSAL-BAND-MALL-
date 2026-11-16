@@ -40,6 +40,7 @@ import {
   ShoppingBag,
   RefreshCw,
   Fingerprint,
+  Volume2,
 } from 'lucide-react';
 
 export const ProfilePage: React.FC = () => {
@@ -263,6 +264,13 @@ export const ProfilePage: React.FC = () => {
             action: () => navigateTo('/admin/payshap-settings'),
           },
           {
+            id: 'admin-buy-ticket-alarm',
+            title: 'Buy Ticket Alarm Song (Admin Only)',
+            icon: Volume2,
+            iconColor: 'text-[#FACC15]',
+            action: () => navigateTo('/admin/buy-ticket-alarm'),
+          },
+          {
             id: 'admin-live-payments',
             title: 'Live Payments & SMS Confirmation',
             icon: Radio,
@@ -359,20 +367,6 @@ export const ProfilePage: React.FC = () => {
       : []),
 
     // Standard Customer Features (Visible to Everyone)
-    {
-      id: 'brand-logo-settings',
-      title: 'Upload Brand Logo & Appearance',
-      icon: Camera,
-      iconColor: 'text-[#C9A86A]',
-      action: () => navigateTo('/admin/logo-settings'),
-    },
-    {
-      id: 'app-icon-settings',
-      title: 'Change App Icon (PWA & Favicon)',
-      icon: Smartphone,
-      iconColor: 'text-[#C9A86A]',
-      action: () => navigateTo('/admin/icon-settings'),
-    },
     {
       id: 'verify-id',
       title: 'SA ID Verification for Alcohol',

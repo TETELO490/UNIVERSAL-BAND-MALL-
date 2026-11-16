@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Fingerprint,
@@ -25,6 +25,7 @@ import {
   isRealCredentialId,
   MultiLockConfig,
 } from '../../utils/multiLockSecurity';
+import { PatternGrid } from '../security/PatternGrid';
 import { db } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 
@@ -116,10 +117,16 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
           }
         }
 
-        // 2. If Admin, also check adminSecurity/admin_security_root
+        // 2. If Admin, check adminSecurity/{email} first, then admin_security_root
         if (isRolePrivileged) {
           try {
-            const adminSecSnap = await getDoc(doc(db, 'adminSecurity', 'admin_security_root'));
+            const emailDocId = targetEmail.trim().toLowerCase();
+            let adminSecSnap = emailDocId
+              ? await getDoc(doc(db, 'adminSecurity', emailDocId))
+              : null;
+            if (!adminSecSnap || !adminSecSnap.exists()) {
+              adminSecSnap = await getDoc(doc(db, 'adminSecurity', 'admin_security_root'));
+            }
             if (adminSecSnap.exists()) {
               const aData = adminSecSnap.data();
               if (aData?.patternHash) {
@@ -226,12 +233,8 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
   };
 
   // 2. PATTERN HANDLER
-  const handleDotClick = (dotIndex: number) => {
-    setPatternError(null);
-    if (!drawPattern.includes(dotIndex)) {
-      setDrawPattern((prev) => [...prev, dotIndex]);
-    }
-  };
+  const [showPatternLines, setShowPatternLines] = useState<boolean>(true);
+  const [patternAttemptsLeft, setPatternAttemptsLeft] = useState<number>(3);
 
   const handleClearPattern = () => {
     setDrawPattern([]);
@@ -251,12 +254,24 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
       return;
     }
 
-    const isMatch = await verifyPatternLock(drawPattern, targetEmail, expectedHash);
-    if (isMatch) {
+    const matchedZeroIndexed = await verifyPatternLock(drawPattern, targetEmail, expectedHash);
+    const matchedOneIndexed = matchedZeroIndexed
+      ? true
+      : await verifyPatternLock(drawPattern.map((d) => d + 1), targetEmail, expectedHash);
+
+    if (matchedZeroIndexed || matchedOneIndexed) {
+      setPatternAttemptsLeft(3);
       setPatternDone(true);
       advanceToNext('pattern');
     } else {
-      setPatternError('Incorrect pattern. Please try again.');
+      const remaining = patternAttemptsLeft - 1;
+      if (remaining > 0) {
+        setPatternAttemptsLeft(remaining);
+        setPatternError(`Wrong pattern, ${remaining} attempt${remaining === 1 ? '' : 's'} left`);
+      } else {
+        setPatternAttemptsLeft(3);
+        setPatternError('Wrong pattern, 0 attempts left. Please try again carefully.');
+      }
       setDrawPattern([]);
     }
   };
@@ -483,41 +498,28 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
         <div className="bg-black/40 border border-white/10 rounded-2xl p-5 text-center flex flex-col items-center animate-in fade-in duration-200">
           <div className="flex items-center justify-between w-full mb-3 px-2">
             <span className="text-xs font-bold text-white">Draw Your Security Pattern</span>
-            <span className="text-[11px] font-mono text-[#FACC15]">
-              {drawPattern.length > 0 ? `${drawPattern.length} dots connected` : 'Connect ≥ 4 dots'}
-            </span>
+            <button
+              type="button"
+              onClick={() => setShowPatternLines((prev) => !prev)}
+              className="text-[11px] font-bold text-[#FACC15] flex items-center gap-1 cursor-pointer"
+            >
+              {showPatternLines ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              <span>{showPatternLines ? 'Hide pattern' : 'Show pattern'}</span>
+            </button>
           </div>
 
-          {/* 3x3 Dot Grid */}
-          <div className="w-56 h-56 bg-neutral-900/90 rounded-2xl border border-white/15 p-4 grid grid-cols-3 gap-3 mx-auto mb-4 select-none touch-none">
-            {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((dot) => {
-              const isSelected = drawPattern.includes(dot);
-              const orderIndex = drawPattern.indexOf(dot);
-
-              return (
-                <button
-                  key={dot}
-                  type="button"
-                  onClick={() => handleDotClick(dot)}
-                  className={`relative rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-[#FACC15] text-black shadow-lg shadow-yellow-500/30 scale-105'
-                      : 'bg-white/10 hover:bg-white/20 text-gray-400'
-                  }`}
-                >
-                  <div
-                    className={`rounded-full transition-all ${
-                      isSelected ? 'w-4 h-4 bg-black/60' : 'w-3 h-3 bg-white/40'
-                    }`}
-                  />
-                  {isSelected && (
-                    <span className="absolute text-[10px] font-black text-black">
-                      {orderIndex + 1}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          {/* 3x3 Drag-and-Tap Pattern Grid */}
+          <div className="mb-4">
+            <PatternGrid
+              dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+              value={drawPattern}
+              onChange={(next) => {
+                setPatternError(null);
+                setDrawPattern(next);
+              }}
+              showNumbers={showPatternLines}
+              sizeClassName="w-56 h-56"
+            />
           </div>
 
           {patternError && (

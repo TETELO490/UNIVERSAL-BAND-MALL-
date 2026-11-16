@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { db, auth } from '../../firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -9,6 +9,7 @@ import {
   authenticateWithBiometrics,
   isRealCredentialId,
 } from '../../utils/multiLockSecurity';
+import { PatternGrid } from '../security/PatternGrid';
 import {
   ShieldCheck,
   X,
@@ -22,10 +23,8 @@ import {
   ArrowRight,
   HelpCircle,
   Fingerprint,
-  Grid3X3,
   Check,
   RefreshCw,
-  Lock,
 } from 'lucide-react';
 
 interface AdminSecurityModalProps {
@@ -37,6 +36,7 @@ interface AdminSecurityModalProps {
 export type LockType = 'PIN' | 'PASSWORD' | 'LUCKY' | 'PATTERN' | 'FINGERPRINT';
 
 interface AdminLocksVault {
+  accountEmail?: string;
   pin: string;
   pinHash: string;
   passwordHash: string;
@@ -45,6 +45,7 @@ interface AdminLocksVault {
   pattern: number[];
   patternHash: string;
   fingerprintCredentialId?: string;
+  fingerprintCredentialIds?: string[];
   fingerprintEnrolled?: boolean;
   recoveryEmail: string;
   isSetupComplete: boolean;
@@ -52,17 +53,16 @@ interface AdminLocksVault {
 }
 
 const STORAGE_KEY = 'ub_admin_security_vault_v5';
-const RESET_FLAG_KEY = 'ub_admin_locks_v5_reset_applied_v1';
 
 export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
 }) => {
-  const { currentUser, cancelAdminLogin } = useApp();
+  const { currentUser, pendingAdminAuthUser, cancelAdminLogin } = useApp();
 
   const [modalMode, setModalMode] = useState<
-    'SETUP' | 'VERIFY' | 'FINGERPRINT_EMAIL_VERIFY'
+    'SETUP' | 'VERIFY' | 'FINGERPRINT_EMAIL_VERIFY' | 'FORGOT_PATTERN'
   >('VERIFY');
   const [activeLockTab, setActiveLockTab] = useState<LockType>('PIN');
 
@@ -130,7 +130,17 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
   const [setupEmailLinkVerified, setSetupEmailLinkVerified] = useState<boolean>(false);
 
   const [resendCooldown, setResendCooldown] = useState<number>(0);
-  const patternGridRef = useRef<HTMLDivElement>(null);
+  const [showPattern, setShowPattern] = useState<boolean>(true);
+  const [patternAttemptsLeft, setPatternAttemptsLeft] = useState<number>(3);
+
+  // Forgot Pattern Reset States (never deletes account)
+  const [forgotStep, setForgotStep] = useState<'AUTH' | 'DRAW' | 'CONFIRM'>('AUTH');
+  const [forgotPin, setForgotPin] = useState<string>('');
+  const [forgotPassword, setForgotPassword] = useState<string>('');
+  const [showForgotPassword, setShowForgotPassword] = useState<boolean>(false);
+  const [forgotNewPattern, setForgotNewPattern] = useState<number[]>([]);
+  const [forgotConfirmPattern, setForgotConfirmPattern] = useState<number[]>([]);
+  const [isSavingForgotPattern, setIsSavingForgotPattern] = useState<boolean>(false);
 
   const triggerError = (msg: string) => {
     setErrorMessage(msg);
@@ -161,6 +171,8 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     setVerifyPassword('');
     setVerifyLuckyNumber('');
     setVerifyPattern([]);
+    setPatternAttemptsLeft(3);
+    setIsConfirmingPattern(false);
     setIsVerifyingFingerprint(false);
     setVerifiedLocks({
       PIN: false,
@@ -178,9 +190,18 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     });
     setLoading(true);
 
+    const resolvedAdminEmail = (
+      pendingAdminAuthUser?.email ||
+      currentUser?.email ||
+      localStorage.getItem('ub_admin_email') ||
+      'tetelophokwane98@gmail.com'
+    )
+      .trim()
+      .toLowerCase();
+
     const initVault = async () => {
       try {
-        // Enforce all 5 locks start locked on every verification session
+        // Enforce all 5 locks start locked on every verification session across every device
         setVerifiedLocks({
           PIN: false,
           PASSWORD: false,
@@ -188,30 +209,43 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
           PATTERN: false,
           FINGERPRINT: false,
         });
+        sessionStorage.removeItem('ub_admin_5locks_passed');
 
-        const adminEmail = (currentUser?.email || localStorage.getItem('ub_admin_email') || 'tetelophokwane98@gmail.com').trim().toLowerCase();
         let loadedVault: AdminLocksVault | null = null;
+
+        const normalizeCloudVault = (data: Record<string, any>): AdminLocksVault => {
+          const credList: string[] = Array.isArray(data.fingerprintCredentialIds)
+            ? data.fingerprintCredentialIds.filter((c: unknown) => typeof c === 'string' && isRealCredentialId(c))
+            : [];
+          if (isRealCredentialId(data.fingerprintCredentialId) && !credList.includes(data.fingerprintCredentialId)) {
+            credList.push(data.fingerprintCredentialId);
+          }
+          return {
+            accountEmail: (data.accountEmail || data.recoveryEmail || resolvedAdminEmail).trim().toLowerCase(),
+            pin: data.pin || '',
+            pinHash: data.pinHash || '',
+            passwordHash: data.passwordHash || '',
+            luckyNumber: data.luckyNumber || '',
+            luckyNumberHash: data.luckyNumberHash || '',
+            pattern: Array.isArray(data.pattern) ? data.pattern.map(Number) : [],
+            patternHash: data.patternHash || '',
+            fingerprintCredentialId: credList[0] || data.fingerprintCredentialId || '',
+            fingerprintCredentialIds: credList,
+            fingerprintEnrolled: credList.length > 0 || Boolean(data.fingerprintCredentialId),
+            recoveryEmail: (data.recoveryEmail || resolvedAdminEmail).trim().toLowerCase(),
+            isSetupComplete: true,
+            updatedAt: new Date().toISOString(),
+          };
+        };
 
         try {
           // 1. Fetch from Firestore linked to Admin Account email
-          const snap = await getDoc(doc(db, 'adminSecurity', adminEmail));
+          const snap = await getDoc(doc(db, 'adminSecurity', resolvedAdminEmail));
           if (snap.exists()) {
             const data = snap.data();
             if (data.isSetupComplete && data.pinHash && data.passwordHash) {
-              loadedVault = {
-                pin: data.pin || '',
-                pinHash: data.pinHash || '',
-                passwordHash: data.passwordHash || '',
-                luckyNumber: data.luckyNumber || '',
-                luckyNumberHash: data.luckyNumberHash || '',
-                pattern: data.pattern || [],
-                patternHash: data.patternHash || '',
-                fingerprintCredentialId: data.fingerprintCredentialId || '',
-                fingerprintEnrolled: Boolean(data.fingerprintCredentialId),
-                recoveryEmail: data.recoveryEmail || adminEmail,
-                isSetupComplete: true,
-                updatedAt: new Date().toISOString(),
-              };
+              loadedVault = normalizeCloudVault(data);
+              localStorage.setItem(`${STORAGE_KEY}_${resolvedAdminEmail}`, JSON.stringify(loadedVault));
               localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedVault));
             }
           }
@@ -222,24 +256,12 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
             if (rootSnap.exists()) {
               const data = rootSnap.data();
               if (data.isSetupComplete && data.pinHash && data.passwordHash) {
-                loadedVault = {
-                  pin: data.pin || '',
-                  pinHash: data.pinHash || '',
-                  passwordHash: data.passwordHash || '',
-                  luckyNumber: data.luckyNumber || '',
-                  luckyNumberHash: data.luckyNumberHash || '',
-                  pattern: data.pattern || [],
-                  patternHash: data.patternHash || '',
-                  fingerprintCredentialId: data.fingerprintCredentialId || '',
-                  fingerprintEnrolled: Boolean(data.fingerprintCredentialId),
-                  recoveryEmail: data.recoveryEmail || adminEmail,
-                  isSetupComplete: true,
-                  updatedAt: new Date().toISOString(),
-                };
-                await setDoc(doc(db, 'adminSecurity', adminEmail), {
+                loadedVault = normalizeCloudVault(data);
+                await setDoc(doc(db, 'adminSecurity', resolvedAdminEmail), {
                   ...loadedVault,
                   updatedAt: serverTimestamp(),
                 });
+                localStorage.setItem(`${STORAGE_KEY}_${resolvedAdminEmail}`, JSON.stringify(loadedVault));
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(loadedVault));
               }
             }
@@ -249,11 +271,13 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
         }
 
         if (!loadedVault) {
-          const localRaw = localStorage.getItem(STORAGE_KEY);
+          const emailScopedRaw = localStorage.getItem(`${STORAGE_KEY}_${resolvedAdminEmail}`);
+          const localRaw = emailScopedRaw || localStorage.getItem(STORAGE_KEY);
           if (localRaw) {
             try {
               const parsed = JSON.parse(localRaw);
-              if (parsed && parsed.isSetupComplete) {
+              const parsedEmail = (parsed?.accountEmail || parsed?.recoveryEmail || '').trim().toLowerCase();
+              if (parsed && parsed.isSetupComplete && (!parsedEmail || parsedEmail === resolvedAdminEmail)) {
                 loadedVault = parsed;
               }
             } catch (_) {}
@@ -277,7 +301,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
           setSetupPattern([]);
           setSetupConfirmPattern([]);
           setSetupFingerprintCredId('');
-          setSetupRecoveryEmail(currentUser?.email || 'tetelophokwane98@gmail.com');
+          setSetupRecoveryEmail(resolvedAdminEmail || 'tetelophokwane98@gmail.com');
         }
       } catch (e) {
         console.warn('Error loading admin locks vault:', e);
@@ -288,7 +312,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     };
 
     initVault();
-  }, [isOpen, currentUser?.email]);
+  }, [isOpen, currentUser?.email, pendingAdminAuthUser?.email]);
 
   if (!isOpen) return null;
 
@@ -421,16 +445,137 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
 
     const patternString = verifyPattern.join('-');
     const hash = await sha256(patternString);
-    const matched = vault.patternHash
-      ? hash === vault.patternHash
-      : patternString === (vault.pattern || []).join('-');
+    let matched = false;
+
+    if (vault.patternHash) {
+      matched = hash === vault.patternHash;
+    }
+    if (!matched && Array.isArray(vault.pattern) && vault.pattern.length >= 4) {
+      matched = patternString === vault.pattern.join('-');
+    }
 
     if (matched) {
+      setPatternAttemptsLeft(3);
       markLockPassed('PATTERN');
       setVerifyPattern([]);
     } else {
-      recordLockFailure('PATTERN', 'Pattern verification failed. Try again.');
+      const remaining = patternAttemptsLeft - 1;
+      if (remaining > 0) {
+        setPatternAttemptsLeft(remaining);
+        recordLockFailure(
+          'PATTERN',
+          `Wrong pattern, ${remaining} attempt${remaining === 1 ? '' : 's'} left`
+        );
+      } else {
+        setPatternAttemptsLeft(3);
+        recordLockFailure(
+          'PATTERN',
+          'Wrong pattern, 0 attempts left. Draw carefully again or tap Forgot Pattern? below.'
+        );
+      }
       setVerifyPattern([]);
+    }
+  };
+
+  const handleOpenForgotPattern = () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setForgotStep('AUTH');
+    setForgotPin('');
+    setForgotPassword('');
+    setShowForgotPassword(false);
+    setForgotNewPattern([]);
+    setForgotConfirmPattern([]);
+    setModalMode('FORGOT_PATTERN');
+  };
+
+  const handleVerifyForgotPatternAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    if (!vault) return;
+    if (forgotPin.trim().length !== 4) {
+      triggerError('Enter your 4-digit Admin PIN.');
+      return;
+    }
+    if (!forgotPassword.trim()) {
+      triggerError('Enter your Admin Password.');
+      return;
+    }
+    const pinHash = await sha256(forgotPin.trim());
+    const passHash = await sha256(forgotPassword.trim());
+    const pinOk = vault.pinHash ? pinHash === vault.pinHash : forgotPin.trim() === vault.pin;
+    const passOk = vault.passwordHash ? passHash === vault.passwordHash : false;
+    if (!pinOk || !passOk) {
+      triggerError('Admin PIN or Password does not match. Account preserved.');
+      return;
+    }
+    setForgotStep('DRAW');
+  };
+
+  const handleSaveForgotPattern = async () => {
+    setErrorMessage('');
+    if (!vault) return;
+    if (forgotConfirmPattern.length < 4) {
+      triggerError('Pattern must connect at least 4 dots.');
+      return;
+    }
+    if (forgotNewPattern.join('-') !== forgotConfirmPattern.join('-')) {
+      triggerError('Patterns do not match, try again');
+      setForgotNewPattern([]);
+      setForgotConfirmPattern([]);
+      setForgotStep('DRAW');
+      return;
+    }
+
+    setIsSavingForgotPattern(true);
+    try {
+      const newPattern = [...forgotNewPattern];
+      const newPatternHash = await sha256(newPattern.join('-'));
+      const adminEmail = (
+        vault.accountEmail ||
+        vault.recoveryEmail ||
+        pendingAdminAuthUser?.email ||
+        currentUser?.email ||
+        localStorage.getItem('ub_admin_email') ||
+        'tetelophokwane98@gmail.com'
+      )
+        .trim()
+        .toLowerCase();
+
+      const updatedVault: AdminLocksVault = {
+        ...vault,
+        accountEmail: adminEmail,
+        pattern: newPattern,
+        patternHash: newPatternHash,
+        updatedAt: new Date().toISOString(),
+      };
+
+      localStorage.setItem(`${STORAGE_KEY}_${adminEmail}`, JSON.stringify(updatedVault));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedVault));
+
+      await setDoc(doc(db, 'adminSecurity', adminEmail), {
+        ...updatedVault,
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(doc(db, 'adminSecurity', 'admin_security_root'), {
+        ...updatedVault,
+        updatedAt: serverTimestamp(),
+      });
+
+      setVault(updatedVault);
+      setPatternAttemptsLeft(3);
+      setVerifyPattern([]);
+      setForgotNewPattern([]);
+      setForgotConfirmPattern([]);
+      setForgotPin('');
+      setForgotPassword('');
+      setModalMode('VERIFY');
+      setActiveLockTab('PATTERN');
+      setSuccessMessage('Pattern reset successfully! Draw your new pattern to unlock.');
+    } catch (err: any) {
+      triggerError(err?.message || 'Failed to save new pattern.');
+    } finally {
+      setIsSavingForgotPattern(false);
     }
   };
 
@@ -439,7 +584,16 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     setSuccessMessage('');
     if (!vault) return;
 
-    if (!isRealCredentialId(vault.fingerprintCredentialId)) {
+    const credIds = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(vault.fingerprintCredentialIds) ? vault.fingerprintCredentialIds : []),
+          vault.fingerprintCredentialId || '',
+        ].filter((c) => isRealCredentialId(c))
+      )
+    );
+
+    if (credIds.length === 0) {
       triggerError('No hardware fingerprint enrolled in admin vault. Enroll below.');
       return;
     }
@@ -447,7 +601,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     setIsVerifyingFingerprint(true);
     try {
       const res = await authenticateWithBiometrics(
-        vault.fingerprintCredentialId,
+        credIds,
         vault.recoveryEmail
       );
       if (res.success) {
@@ -604,25 +758,38 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
       const lHash = await sha256(setupLuckyNumber.trim().toLowerCase());
       const patHash = await sha256(setupPattern.join('-'));
 
+      const adminEmail = (
+        pendingAdminAuthUser?.email ||
+        currentUser?.email ||
+        localStorage.getItem('ub_admin_email') ||
+        setupRecoveryEmail ||
+        'tetelophokwane98@gmail.com'
+      )
+        .trim()
+        .toLowerCase();
+
       const newVault: AdminLocksVault = {
+        accountEmail: adminEmail,
         pin: setupPin.trim(),
         pinHash: pHash,
         passwordHash: passHash,
         luckyNumber: setupLuckyNumber.trim(),
         luckyNumberHash: lHash,
-        pattern: setupPattern,
+        pattern: [...setupPattern],
         patternHash: patHash,
         fingerprintCredentialId: setupFingerprintCredId,
+        fingerprintCredentialIds: [setupFingerprintCredId],
         fingerprintEnrolled: true,
         recoveryEmail:
-          setupRecoveryEmail.trim().toLowerCase() || 'tetelophokwane98@gmail.com',
+          setupRecoveryEmail.trim().toLowerCase() || adminEmail,
         isSetupComplete: true,
         updatedAt: new Date().toISOString(),
       };
 
-      const adminEmail = (currentUser?.email || localStorage.getItem('ub_admin_email') || newVault.recoveryEmail || 'tetelophokwane98@gmail.com').trim().toLowerCase();
+      localStorage.setItem(`${STORAGE_KEY}_${adminEmail}`, JSON.stringify(newVault));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newVault));
       localStorage.setItem('ub_admin_session', 'true');
+      sessionStorage.setItem('ub_admin_5locks_passed', 'true');
 
       try {
         await setDoc(doc(db, 'adminSecurity', adminEmail), {
@@ -691,8 +858,16 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     setSuccessMessage('');
     setIsEnrollingFingerprint(true);
     try {
-      const adminEmail =
-        vault?.recoveryEmail || currentUser?.email || 'tetelophokwane98@gmail.com';
+      const adminEmail = (
+        vault?.accountEmail ||
+        vault?.recoveryEmail ||
+        pendingAdminAuthUser?.email ||
+        currentUser?.email ||
+        localStorage.getItem('ub_admin_email') ||
+        'tetelophokwane98@gmail.com'
+      )
+        .trim()
+        .toLowerCase();
       const res = await enrollFingerprintBiometrics(
         adminEmail,
         currentUser?.fullName || currentUser?.name || 'Universal Band Admin',
@@ -702,6 +877,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
         const updatedVault = vault
           ? { ...vault }
           : ({
+              accountEmail: adminEmail,
               pin: '',
               pinHash: '',
               passwordHash: '',
@@ -709,15 +885,33 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
               luckyNumberHash: '',
               pattern: [],
               patternHash: '',
+              fingerprintCredentialIds: [],
               recoveryEmail: adminEmail,
               isSetupComplete: true,
               updatedAt: new Date().toISOString(),
             } as AdminLocksVault);
 
+        const existingIds = Array.from(
+          new Set(
+            [
+              ...(Array.isArray(updatedVault.fingerprintCredentialIds)
+                ? updatedVault.fingerprintCredentialIds
+                : []),
+              updatedVault.fingerprintCredentialId || '',
+            ].filter((c) => isRealCredentialId(c))
+          )
+        );
+        if (!existingIds.includes(res.credentialId)) {
+          existingIds.push(res.credentialId);
+        }
+
+        updatedVault.accountEmail = adminEmail;
         updatedVault.fingerprintCredentialId = res.credentialId;
+        updatedVault.fingerprintCredentialIds = existingIds;
         updatedVault.fingerprintEnrolled = true;
         updatedVault.updatedAt = new Date().toISOString();
 
+        localStorage.setItem(`${STORAGE_KEY}_${adminEmail}`, JSON.stringify(updatedVault));
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedVault));
         try {
           await setDoc(doc(db, 'adminSecurity', adminEmail), {
@@ -787,51 +981,11 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
     }
   };
 
-  const renderDotGrid = (
-    currentPattern: number[],
-    onDotClick: (idx: number) => void
-  ) => {
-    return (
-      <div
-        ref={patternGridRef}
-        className="w-64 h-64 mx-auto bg-black/60 border border-white/10 rounded-2xl p-4 grid grid-cols-3 grid-rows-3 gap-4 select-none relative"
-      >
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((dotIdx) => {
-          const isSelected = currentPattern.includes(dotIdx);
-          const order = currentPattern.indexOf(dotIdx);
-          return (
-            <button
-              key={dotIdx}
-              type="button"
-              onClick={() => onDotClick(dotIdx)}
-              className={`relative rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                isSelected
-                  ? 'bg-[#FACC15] scale-110 shadow-[0_0_15px_#FACC15]'
-                  : 'bg-white/20 hover:bg-white/40'
-              }`}
-            >
-              <div
-                className={`w-3.5 h-3.5 rounded-full ${
-                  isSelected ? 'bg-black' : 'bg-white/60'
-                }`}
-              />
-              {isSelected && (
-                <span className="absolute -top-1 -right-1 bg-black text-[#FACC15] text-[9px] font-black w-4 h-4 rounded-full border border-[#FACC15] flex items-center justify-center">
-                  {order + 1}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
   const verifiedCount = Object.values(verifiedLocks).filter(Boolean).length;
   const currentFailCount = failCounts[activeLockTab] || 0;
 
   const handleModalClose = () => {
-    if (modalMode === 'VERIFY' && !checkAllLocksPassed(verifiedLocks)) {
+    if ((modalMode === 'VERIFY' || modalMode === 'FORGOT_PATTERN') && !checkAllLocksPassed(verifiedLocks)) {
       triggerError(`Unlock all 5 logs to continue - ${verifiedCount}/5 unlocked`);
       return;
     }
@@ -1134,24 +1288,44 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
             {/* STEP 4: SET PATTERN > CONFIRM PATTERN */}
             {setupStep === 4 && (
               <div className="flex flex-col gap-3 items-center py-1">
-                <span className="text-xs font-bold text-gray-300 text-center">
-                  {!isConfirmingPattern
-                    ? 'Step 4: Draw Pattern (Connect at least 4 dots)'
-                    : 'Confirm Pattern (Draw the same pattern again)'}
-                </span>
+                <div className="w-full flex items-center justify-between px-1">
+                  <span className="text-xs font-bold text-gray-300">
+                    {!isConfirmingPattern
+                      ? 'Draw new pattern (min 4 dots)'
+                      : 'Draw pattern again to confirm'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPattern((prev) => !prev)}
+                    className="text-[11px] font-bold text-[#FACC15] flex items-center gap-1 cursor-pointer"
+                  >
+                    {showPattern ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showPattern ? 'Hide pattern' : 'Show pattern'}</span>
+                  </button>
+                </div>
 
                 {!isConfirmingPattern ? (
-                  renderDotGrid(setupPattern, (idx) => {
-                    if (!setupPattern.includes(idx)) {
-                      setSetupPattern((prev) => [...prev, idx]);
-                    }
-                  })
+                  <PatternGrid
+                    dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+                    value={setupPattern}
+                    onChange={(next) => {
+                      setErrorMessage('');
+                      setSetupPattern(next);
+                    }}
+                    showNumbers={showPattern}
+                    sizeClassName="w-60 h-60"
+                  />
                 ) : (
-                  renderDotGrid(setupConfirmPattern, (idx) => {
-                    if (!setupConfirmPattern.includes(idx)) {
-                      setSetupConfirmPattern((prev) => [...prev, idx]);
-                    }
-                  })
+                  <PatternGrid
+                    dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+                    value={setupConfirmPattern}
+                    onChange={(next) => {
+                      setErrorMessage('');
+                      setSetupConfirmPattern(next);
+                    }}
+                    showNumbers={showPattern}
+                    sizeClassName="w-60 h-60"
+                  />
                 )}
 
                 <div className="flex gap-2 w-full max-w-[260px]">
@@ -1177,6 +1351,7 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                         return;
                       }
                       setErrorMessage('');
+                      setSetupConfirmPattern([]);
                       setIsConfirmingPattern(true);
                     }}
                     className="mt-1 w-full bg-[#FACC15] text-black font-black py-3 rounded-xl hover:bg-[#eab308] transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-lg"
@@ -1189,12 +1364,14 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                     type="button"
                     onClick={() => {
                       if (setupConfirmPattern.length < 4) {
-                        triggerError('Confirm pattern must connect at least 4 dots.');
+                        triggerError('Pattern must connect at least 4 dots.');
                         return;
                       }
                       if (setupPattern.join('-') !== setupConfirmPattern.join('-')) {
-                        triggerError('Patterns do not match. Redraw confirm pattern.');
+                        triggerError('Patterns do not match, try again');
+                        setSetupPattern([]);
                         setSetupConfirmPattern([]);
+                        setIsConfirmingPattern(false);
                         return;
                       }
                       setErrorMessage('');
@@ -1505,15 +1682,30 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
             {/* TAB 4: PATTERN */}
             {activeLockTab === 'PATTERN' && (
               <div className="flex flex-col items-center gap-3 py-1">
-                <span className="text-xs text-gray-300 font-bold">
-                  Lock 4: Draw Security Pattern
-                </span>
+                <div className="w-full flex items-center justify-between px-1">
+                  <span className="text-xs text-gray-300 font-bold">
+                    Lock 4: Draw Security Pattern
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPattern((prev) => !prev)}
+                    className="text-[11px] font-bold text-[#FACC15] flex items-center gap-1 cursor-pointer"
+                  >
+                    {showPattern ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showPattern ? 'Hide pattern' : 'Show pattern'}</span>
+                  </button>
+                </div>
 
-                {renderDotGrid(verifyPattern, (idx) => {
-                  if (!verifyPattern.includes(idx)) {
-                    setVerifyPattern((prev) => [...prev, idx]);
-                  }
-                })}
+                <PatternGrid
+                  dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+                  value={verifyPattern}
+                  onChange={(next) => {
+                    setErrorMessage('');
+                    setVerifyPattern(next);
+                  }}
+                  showNumbers={showPattern}
+                  sizeClassName="w-60 h-60"
+                />
 
                 <div className="flex gap-2 w-full max-w-xs">
                   <button
@@ -1531,9 +1723,18 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                     className="flex-1 py-2.5 bg-[#FACC15] text-black font-black rounded-xl text-xs hover:bg-[#eab308] transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-lg"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Confirm Pattern</span>
+                    <span>Unlock Pattern</span>
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleOpenForgotPattern}
+                  className="text-xs text-[#FACC15] hover:underline font-bold cursor-pointer flex items-center gap-1 pt-0.5"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>Forgot Pattern? Reset with PIN & Password</span>
+                </button>
               </div>
             )}
 
@@ -1667,6 +1868,198 @@ export const AdminSecurityModal: React.FC<AdminSecurityModalProps> = ({
                 className="text-gray-400 hover:text-white cursor-pointer"
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* MODE 4: FORGOT PATTERN RESET (NO ACCOUNT DELETION) */}
+        {modalMode === 'FORGOT_PATTERN' && (
+          <div className="flex flex-col gap-3 py-1">
+            <div className="p-3 bg-[#FACC15]/10 border border-[#FACC15]/20 rounded-xl text-xs text-gray-300">
+              <span className="font-bold text-[#FACC15] block text-sm mb-0.5">
+                Reset Admin Pattern Lock
+              </span>
+              <p className="text-[11px] text-gray-400">
+                Verify your Admin PIN & Password to set a new pattern without resetting your account or losing data.
+              </p>
+            </div>
+
+            {forgotStep === 'AUTH' && (
+              <form onSubmit={handleVerifyForgotPatternAuth} className="flex flex-col gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-gray-400 block mb-1">
+                    Admin 4-Digit PIN
+                  </label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={forgotPin}
+                    onChange={(e) => {
+                      setErrorMessage('');
+                      setForgotPin(e.target.value.replace(/\D/g, '').slice(0, 4));
+                    }}
+                    placeholder="Enter 4-digit PIN"
+                    className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#FACC15] tracking-widest"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-gray-400 block mb-1">
+                    Admin Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showForgotPassword ? 'text' : 'password'}
+                      value={forgotPassword}
+                      onChange={(e) => {
+                        setErrorMessage('');
+                        setForgotPassword(e.target.value);
+                      }}
+                      placeholder="Enter your Admin password"
+                      className="w-full bg-black/60 border border-white/20 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#FACC15] pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPassword((prev) => !prev)}
+                      className="absolute right-3 top-3 text-gray-400 hover:text-white cursor-pointer"
+                    >
+                      {showForgotPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-[#FACC15] text-black font-black py-3 rounded-xl hover:bg-[#eab308] transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>Verify & Draw New Pattern</span>
+                </button>
+              </form>
+            )}
+
+            {forgotStep === 'DRAW' && (
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-full flex items-center justify-between px-1">
+                  <span className="text-xs font-bold text-white">Draw new pattern</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPattern((prev) => !prev)}
+                    className="text-[11px] font-bold text-[#FACC15] flex items-center gap-1 cursor-pointer"
+                  >
+                    {showPattern ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showPattern ? 'Hide pattern' : 'Show pattern'}</span>
+                  </button>
+                </div>
+
+                <PatternGrid
+                  dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+                  value={forgotNewPattern}
+                  onChange={(next) => {
+                    setErrorMessage('');
+                    setForgotNewPattern(next);
+                  }}
+                  showNumbers={showPattern}
+                  sizeClassName="w-60 h-60"
+                />
+
+                <div className="flex gap-2 w-full max-w-xs">
+                  <button
+                    type="button"
+                    onClick={() => setForgotNewPattern([])}
+                    className="flex-1 py-2.5 bg-white/5 border border-white/10 rounded-xl text-xs text-gray-300 hover:text-white flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Clear</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (forgotNewPattern.length < 4) {
+                        triggerError('Pattern must connect at least 4 dots.');
+                        return;
+                      }
+                      setErrorMessage('');
+                      setForgotConfirmPattern([]);
+                      setForgotStep('CONFIRM');
+                    }}
+                    className="flex-1 py-2.5 bg-[#FACC15] text-black font-black rounded-xl text-xs hover:bg-[#eab308] cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <span>Next: Confirm</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {forgotStep === 'CONFIRM' && (
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-full flex items-center justify-between px-1">
+                  <span className="text-xs font-bold text-white">Draw pattern again to confirm</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPattern((prev) => !prev)}
+                    className="text-[11px] font-bold text-[#FACC15] flex items-center gap-1 cursor-pointer"
+                  >
+                    {showPattern ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showPattern ? 'Hide pattern' : 'Show pattern'}</span>
+                  </button>
+                </div>
+
+                <PatternGrid
+                  dots={[0, 1, 2, 3, 4, 5, 6, 7, 8]}
+                  value={forgotConfirmPattern}
+                  onChange={(next) => {
+                    setErrorMessage('');
+                    setForgotConfirmPattern(next);
+                  }}
+                  showNumbers={showPattern}
+                  sizeClassName="w-60 h-60"
+                />
+
+                <div className="flex gap-2 w-full max-w-xs">
+                  <button
+                    type="button"
+                    onClick={() => setForgotConfirmPattern([])}
+                    className="flex-1 py-2.5 bg-white/5 border border-white/10 rounded-xl text-xs text-gray-300 hover:text-white flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Clear</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingForgotPattern}
+                    onClick={handleSaveForgotPattern}
+                    className="flex-1 py-2.5 bg-[#FACC15] text-black font-black rounded-xl text-xs hover:bg-[#eab308] disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{isSavingForgotPattern ? 'Saving...' : 'Save Pattern'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-between items-center text-xs pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => {
+                  setModalMode('VERIFY');
+                  setActiveLockTab('PATTERN');
+                  setErrorMessage('');
+                }}
+                className="text-gray-400 hover:text-white cursor-pointer"
+              >
+                Back to Pattern Unlock
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelAndExit}
+                className="text-rose-400 hover:text-rose-300 font-bold cursor-pointer"
+              >
+                Exit Admin Login
               </button>
             </div>
           </div>

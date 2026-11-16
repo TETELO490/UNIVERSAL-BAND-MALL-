@@ -72,6 +72,7 @@ const AppLockPage = lazyWithRetry(() => import('./pages/AppLockPage').then(m => 
 const AdminEventsPage = lazyWithRetry(() => import('./pages/AdminEventsPage').then(m => ({ default: m.AdminEventsPage })));
 const AdminPayshapSettingsPage = lazyWithRetry(() => import('./pages/AdminPayshapSettingsPage').then(m => ({ default: m.AdminPayshapSettingsPage })));
 const AdminLivePaymentsPage = lazyWithRetry(() => import('./pages/AdminLivePaymentsPage').then(m => ({ default: m.AdminLivePaymentsPage })));
+const AdminBuyTicketAlarmPage = lazyWithRetry(() => import('./pages/AdminBuyTicketAlarmPage').then(m => ({ default: m.AdminBuyTicketAlarmPage })));
 const PayshapTopUpPage = lazyWithRetry(() => import('./pages/PayshapTopUpPage').then(m => ({ default: m.PayshapTopUpPage })));
 
 // Lazy load modals on demand
@@ -200,16 +201,38 @@ const AppContent: React.FC = () => {
       return <FoodMenuPage />;
     }
 
-    // 5. Protected Routes - Require Login (Take unauthenticated visitors to Register/Login)
+    // 5. Block non-admins (including unauthenticated / normal users) from Admin URLs / deep links
+    const isAdminSettingsDeepLink =
+      currentRoute.startsWith('/admin') ||
+      currentRoute === '/buy-ticket-alarm' ||
+      currentRoute === '/payshap-settings' ||
+      currentRoute === '/live-payments' ||
+      currentRoute === '/logo-settings' ||
+      currentRoute === '/change-logo' ||
+      currentRoute === '/branding' ||
+      currentRoute === '/app-icon' ||
+      currentRoute === '/icon-settings' ||
+      currentRoute === '/change-icon' ||
+      currentRoute === '/api-settings';
+
+    if (isAdminSettingsDeepLink && !isAdmin) {
+      return (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Admin only
+        </div>
+      );
+    }
+
+    // 6. Protected Routes - Require Login (Take unauthenticated visitors to Register/Login)
     if (!isUserLoggedIn) {
       return <RegisterPage />;
     }
 
-    // 5. Protected Admin & Staff routes
+    // 7. Protected Admin & Staff routes
     if (currentRoute.startsWith('/admin') && !isAdmin) {
       return (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
-          Access Denied - Admin privileges required.
+          Admin only
         </div>
       );
     }
@@ -246,7 +269,19 @@ const AppContent: React.FC = () => {
         <AdminPayshapSettingsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
-          Access Denied - Admin privileges required.
+          Admin only
+        </div>
+      );
+    }
+    if (
+      currentRoute === '/admin/buy-ticket-alarm' ||
+      currentRoute === '/buy-ticket-alarm'
+    ) {
+      return isAdmin ? (
+        <AdminBuyTicketAlarmPage />
+      ) : (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Admin only
         </div>
       );
     }
@@ -258,7 +293,7 @@ const AppContent: React.FC = () => {
         <AdminLivePaymentsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
-          Access Denied - Admin privileges required.
+          Admin only
         </div>
       );
     }
@@ -273,7 +308,7 @@ const AppContent: React.FC = () => {
         <AdminLogoSettingsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
-          Access Denied - Admin privileges required.
+          Admin only
         </div>
       );
     }
@@ -288,7 +323,7 @@ const AppContent: React.FC = () => {
         <AppIconSettingsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
-          Access Denied - Admin privileges required.
+          Admin only
         </div>
       );
     }

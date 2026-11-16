@@ -72,14 +72,16 @@ export const Header: React.FC = () => {
       <div className="max-w-md mx-auto flex items-center justify-between min-h-[44px]">
         {/* Left: Universal Band Logo Image */}
         <div className="flex items-center gap-1.5">
-          <input
-            type="file"
-            ref={logoFileInputRef}
-            onChange={handleLogoFileChange}
-            accept="image/*"
-            className="hidden"
-            id="header-logo-upload-input"
-          />
+          {isAdmin && (
+            <input
+              type="file"
+              ref={logoFileInputRef}
+              onChange={handleLogoFileChange}
+              accept="image/*"
+              className="hidden"
+              id="header-logo-upload-input"
+            />
+          )}
           <button
             onClick={() => navigateTo('/')}
             className="flex items-center gap-2 text-left group focus:outline-none cursor-pointer"
@@ -104,16 +106,18 @@ export const Header: React.FC = () => {
             </span>
           </button>
 
-          {/* Direct "Change Logo" button so users can easily change their logo anytime */}
-          <button
-            onClick={() => navigateTo('/admin/logo-settings')}
-            className="flex items-center gap-1 py-0.5 px-2 rounded-full bg-white/5 hover:bg-[#C9A86A]/15 text-gray-300 hover:text-[#C9A86A] border border-white/10 hover:border-[#C9A86A]/40 active:scale-95 transition-all text-[10px] font-bold cursor-pointer"
-            title="Upload Brand Logo / Change Logo"
-            aria-label="Upload Brand Logo"
-          >
-            <Camera className="w-3 h-3 text-[#C9A86A]" />
-            <span className="hidden sm:inline">Change Logo</span>
-          </button>
+          {/* Admin-only "Change Logo" camera button */}
+          {isAdmin && (
+            <button
+              onClick={() => navigateTo('/admin/logo-settings')}
+              className="flex items-center gap-1 py-0.5 px-2 rounded-full bg-white/5 hover:bg-[#C9A86A]/15 text-gray-300 hover:text-[#C9A86A] border border-white/10 hover:border-[#C9A86A]/40 active:scale-95 transition-all text-[10px] font-bold cursor-pointer"
+              title="Upload Brand Logo / Change Logo (Admin Only)"
+              aria-label="Upload Brand Logo"
+            >
+              <Camera className="w-3 h-3 text-[#C9A86A]" />
+              <span className="hidden sm:inline">Change Logo</span>
+            </button>
+          )}
         </div>
 
         {/* Center/Right Actions */}
@@ -360,29 +364,6 @@ export const Header: React.FC = () => {
                     </a>
                   </>
                 )}
-
-                {/* Brand Logo & Icon Settings Links */}
-                <button
-                  onClick={() => {
-                    setDropdownOpen(false);
-                    navigateTo('/admin/logo-settings');
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs text-[#C9A86A] hover:bg-white/5 flex items-center gap-2 font-bold border-t border-white/5"
-                >
-                  <Camera className="w-3.5 h-3.5 text-[#C9A86A]" />
-                  <span>Upload Brand Logo</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setDropdownOpen(false);
-                    navigateTo('/admin/icon-settings');
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs text-[#C9A86A] hover:bg-white/5 flex items-center gap-2 font-bold"
-                >
-                  <Smartphone className="w-3.5 h-3.5 text-[#C9A86A]" />
-                  <span>Change App Icon</span>
-                </button>
 
                 {/* Login / Register Quick Navigation */}
                 <button

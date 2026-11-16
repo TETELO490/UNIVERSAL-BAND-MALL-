@@ -4,6 +4,7 @@ import { db, storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { ensurePhotosPermission } from '../utils/nativePermissions';
+import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import {
   ArrowLeft,
   Upload,
@@ -21,6 +22,7 @@ import {
   Palette,
   Layers,
   ExternalLink,
+  Lock,
 } from 'lucide-react';
 
 /**
@@ -134,7 +136,25 @@ const PRESET_ICONS: IconPreset[] = [
 ];
 
 export const AppIconSettingsPage: React.FC = () => {
-  const { customAppIconUrl, updateCustomAppIcon, customLogoUrl, currentUser, navigateTo } = useApp();
+  const { customAppIconUrl, updateCustomAppIcon, customLogoUrl, currentUser, firebaseUser, navigateTo } = useApp();
+
+  const isUserLoggedIn = Boolean(
+    firebaseUser ||
+      (currentUser?.isRegistered && currentUser?.id !== 'guest_user') ||
+      localStorage.getItem('ub_admin_session') === 'true'
+  );
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const has5LocksPassed =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+    localStorage.getItem('ub_admin_session') === 'true';
+  const isAdmin = Boolean(
+    isUserLoggedIn &&
+      has5LocksPassed &&
+      (roleLower === 'admin' ||
+        isAuthorizedAdminEmail(currentUser?.email) ||
+        localStorage.getItem('ub_admin_session') === 'true')
+  );
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewIconUrl, setPreviewIconUrl] = useState<string>(
@@ -428,6 +448,27 @@ export const AppIconSettingsPage: React.FC = () => {
       setIsUploading(false);
     }
   };
+
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white flex items-center justify-center p-6">
+        <div className="max-w-sm w-full bg-[#141414] border border-red-500/30 rounded-3xl p-6 text-center space-y-4">
+          <Lock className="w-10 h-10 text-red-400 mx-auto" />
+          <h1 className="text-lg font-black text-white">Admin only</h1>
+          <p className="text-xs text-gray-400">
+            This setting is restricted to the Admin account.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigateTo('/')}
+            className="w-full py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white cursor-pointer"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white pb-24 pt-4 px-4 max-w-md mx-auto">

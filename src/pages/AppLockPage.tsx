@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import { Security } from '../components/multilock/Security';
+import { PatternGrid } from '../components/security/PatternGrid';
 import {
   getMultiLockConfig,
   verifyPasswordLock,
@@ -160,11 +161,6 @@ export const AppLockPage: React.FC = () => {
   };
 
   // 3. Pattern Check (strict hash match required)
-  const handlePatternDotClick = (dot: number) => {
-    if (drawPattern.includes(dot)) return;
-    setDrawPattern((prev) => [...prev, dot]);
-  };
-
   const handlePatternVerify = async () => {
     if (drawPattern.length < 4) {
       triggerError('Connect at least 4 dots to verify pattern.');
@@ -183,11 +179,12 @@ export const AppLockPage: React.FC = () => {
       executeUnlock();
     } else {
       const remaining = patternAttemptsLeft - 1;
-      setPatternAttemptsLeft(remaining);
       if (remaining > 0) {
+        setPatternAttemptsLeft(remaining);
         triggerError(`Wrong pattern, ${remaining} attempt${remaining === 1 ? '' : 's'} left`);
       } else {
-        triggerError('Maximum attempts reached. Switch to PIN or reset pattern.');
+        setPatternAttemptsLeft(3);
+        triggerError('Wrong pattern, 0 attempts left. Try again carefully or switch to PIN.');
       }
       setDrawPattern([]);
     }
@@ -467,26 +464,13 @@ export const AppLockPage: React.FC = () => {
         {/* METHOD 4: PATTERN */}
         {currentMethod === 'pattern' && (
           <div className="space-y-3 pt-1 text-center">
-            <div className="grid grid-cols-3 gap-3 w-48 mx-auto p-4 bg-black/60 rounded-3xl border border-white/10">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((dot) => {
-                const isSelected = drawPattern.includes(dot);
-                const order = drawPattern.indexOf(dot);
-                return (
-                  <button
-                    key={dot}
-                    type="button"
-                    onClick={() => handlePatternDotClick(dot)}
-                    className={`w-11 h-11 rounded-full flex items-center justify-center font-bold text-xs transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#FACC15] text-black scale-110 shadow-lg shadow-yellow-400/30'
-                        : 'bg-white/10 text-gray-400 hover:bg-white/20'
-                    }`}
-                  >
-                    {isSelected ? order + 1 : '•'}
-                  </button>
-                );
-              })}
-            </div>
+            <PatternGrid
+              dots={[1, 2, 3, 4, 5, 6, 7, 8, 9]}
+              value={drawPattern}
+              onChange={setDrawPattern}
+              showNumbers={true}
+              sizeClassName="w-52 h-52"
+            />
 
             <div className="flex gap-2">
               <button

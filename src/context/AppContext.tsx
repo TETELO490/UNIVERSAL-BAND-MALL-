@@ -37,7 +37,7 @@ import { GoogleAuth } from '@codetrix-studio/capacitor-google-auth';
 import { auth, googleProvider, db, handleFirestoreError, OperationType, testConnection, getActionCodeSettings } from '../firebase';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { firebaseConfig } from '../firebase';
-import { EventItem, MenuItem, MenuItemDoc, Promoter, Store, Ticket, UserProfile, StoreRequest, WalletDoc, WalletTransaction, AttendanceStatus, AttendanceLog, VendorSale, CartItem, MallOrder, StoreMessage, StoreWorker, StorePresence, NewOrderSoundConfig, ActivePaymentAlarm, AppNotificationBanner, SupportChat, SupportMessage, SupportTicketAttachment } from '../types';
+import { EventItem, MenuItem, MenuItemDoc, Promoter, Store, Ticket, UserProfile, StoreRequest, WalletDoc, WalletTransaction, AttendanceStatus, AttendanceLog, VendorSale, CartItem, MallOrder, StoreMessage, StoreWorker, StorePresence, NewOrderSoundConfig, BuyTicketAlarmConfig, ActivePaymentAlarm, ActiveBuyTicketAlarm, AppNotificationBanner, SupportChat, SupportMessage, SupportTicketAttachment } from '../types';
 import { calculatePlatformFee, getPhoneLookupFeeSplit, MALL_FEES } from '../utils/mallFees';
 import { isAlcoholItem } from '../utils/ageHelper';
 import { isAuthorizedAdminEmail, addAuthorizedAdminEmail } from '../utils/cryptoHelper';
@@ -225,6 +225,7 @@ interface AppContextType {
 
   isAdminSecurityModalOpen: boolean;
   setIsAdminSecurityModalOpen: (open: boolean) => void;
+  pendingAdminAuthUser: UserProfile | null;
   openAdminLoginFlow: () => void;
   handleAdminSecuritySuccess: () => void;
   cancelAdminLogin: () => Promise<void>;
@@ -296,8 +297,12 @@ interface AppContextType {
   requestAdminSmsPermissionPopup: () => Promise<boolean>;
   newOrderSound: NewOrderSoundConfig;
   updateNewOrderSound: (config: NewOrderSoundConfig) => Promise<void>;
+  buyTicketAlarm: BuyTicketAlarmConfig;
+  updateBuyTicketAlarm: (config: BuyTicketAlarmConfig) => Promise<void>;
   activePaymentAlarm: ActivePaymentAlarm | null;
   dismissPaymentAlarm: () => Promise<void>;
+  activeBuyTicketAlarm: ActiveBuyTicketAlarm | null;
+  dismissBuyTicketAlarm: () => void;
   testPaymentAlarm: (overrideSound?: NewOrderSoundConfig) => Promise<void>;
   supportRingEnabled: boolean;
   setSupportRingEnabled: (enabled: boolean) => void;
@@ -774,6 +779,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return DEFAULT_NEW_ORDER_SOUND;
   });
 
+  const [buyTicketAlarm, setBuyTicketAlarm] = useState<BuyTicketAlarmConfig>(() => {
+    try {
+      const saved = localStorage.getItem('ub_buy_ticket_alarm');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            ...DEFAULT_NEW_ORDER_SOUND,
+            enabled: true,
+            ...parsed,
+          };
+        }
+      }
+    } catch {}
+    return {
+      ...DEFAULT_NEW_ORDER_SOUND,
+      enabled: true,
+    };
+  });
+  const buyTicketAlarmRef = useRef<BuyTicketAlarmConfig>(buyTicketAlarm);
+  useEffect(() => {
+    buyTicketAlarmRef.current = buyTicketAlarm;
+  }, [buyTicketAlarm]);
+
+  const [activeBuyTicketAlarm, setActiveBuyTicketAlarm] = useState<ActiveBuyTicketAlarm | null>(null);
+  const buyTicketAlarmTriggeredIdsRef = useRef<Set<string>>(new Set());
+
+  const dismissBuyTicketAlarm = () => {
+    stopLoopingPaymentAlarm();
+    setActiveBuyTicketAlarm(null);
+  };
+
+  const updateBuyTicketAlarm = async (config: BuyTicketAlarmConfig) => {
+    const normalized: BuyTicketAlarmConfig = {
+      ...DEFAULT_NEW_ORDER_SOUND,
+      ...config,
+      enabled: config.enabled !== false,
+    };
+    setBuyTicketAlarm(normalized);
+    buyTicketAlarmRef.current = normalized;
+    try {
+      localStorage.setItem('ub_buy_ticket_alarm', JSON.stringify(normalized));
+    } catch {}
+    try {
+      const firestoreAlarm: BuyTicketAlarmConfig =
+        normalized.customDataUrl && normalized.customDataUrl.length > 700_000
+          ? {
+              mode: normalized.mode,
+              presetId: normalized.presetId,
+              customName: normalized.customName,
+              volume: normalized.volume,
+              enabled: normalized.enabled,
+            }
+          : normalized;
+      await setDoc(
+        doc(db, 'settings', 'buyTicketAlarm'),
+        {
+          ...cleanForFirestore(firestoreAlarm),
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('Could not persist Buy Ticket Alarm settings to Firestore:', e);
+    }
+  };
+
   const [notificationBanner, setNotificationBanner] = useState<AppNotificationBanner | null>(null);
   const dismissNotificationBanner = () => setNotificationBanner(null);
 
@@ -837,6 +909,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const ticketsSnapshotInitializedRef = useRef<boolean>(false);
   const notifiedTicketEventsRef = useRef<Set<string>>(new Set());
 
+  const triggerAdminBuyTicketAlarmIfEnabled = (ticket: Ticket) => {
+    const has5LocksPassed =
+      typeof window !== 'undefined' &&
+      sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+      localStorage.getItem('ub_admin_session') === 'true';
+    if (!isAdminSessionActive() || !has5LocksPassed) return;
+
+    const cfg = buyTicketAlarmRef.current;
+    if (!cfg || !cfg.enabled) return;
+
+    if (buyTicketAlarmTriggeredIdsRef.current.has(ticket.id)) return;
+    buyTicketAlarmTriggeredIdsRef.current.add(ticket.id);
+
+    const custName = ticket.attendeeName || ticket.customerName || 'Customer';
+    const tierLabel = ticket.ticketTier || ticket.tierName || 'General';
+    const eventTitle = ticket.eventTitle || ticket.eventName || 'Event';
+
+    setActiveBuyTicketAlarm({
+      id: `ticket_alarm_${ticket.id}_${Date.now()}`,
+      ticketId: ticket.id,
+      customer: custName,
+      eventTitle,
+      tier: tierLabel,
+      price: ticket.price || '',
+      timestamp: new Date().toISOString(),
+    });
+    startLoopingPaymentAlarm(cfg);
+    void triggerBackgroundNotification(
+      'New Ticket Purchased',
+      `${custName} bought ${tierLabel} (${eventTitle})`,
+      `ticket-alarm-${ticket.id}`
+    );
+  };
+
   const notifyTicketLifecycleEvent = (ticket: Ticket, kind: 'waiting' | 'paid') => {
     const dedupeKey = `${kind}:${ticket.id}`;
     if (notifiedTicketEventsRef.current.has(dedupeKey)) return;
@@ -844,7 +950,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const custName = ticket.attendeeName || ticket.customerName || 'Customer';
     const tierLabel = ticket.ticketTier || ticket.tierName || 'General';
-    const adminActive = isAdminSessionActive();
+    const has5LocksPassed =
+      typeof window !== 'undefined' &&
+      sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
+      localStorage.getItem('ub_admin_session') === 'true';
+    const adminActive = isAdminSessionActive() && has5LocksPassed;
     const cu = currentUserRef.current;
     const cuPhone = normalizePhoneDigits(cu?.phone);
     const tPhone = normalizePhoneDigits(ticket.attendeePhone || ticket.customerPhone);
@@ -858,8 +968,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (kind === 'waiting') {
       if (adminActive) {
         const msg = `New Ticket - ${custName} - ${tierLabel} - Waiting for Payment`;
-        playNewOrderSound(newOrderSoundRef.current);
-        void triggerBackgroundNotification('New Ticket Waiting for Payment', msg, `waiting-${ticket.id}`);
+        triggerAdminBuyTicketAlarmIfEnabled(ticket);
+        if (!buyTicketAlarmRef.current?.enabled) {
+          playNewOrderSound(newOrderSoundRef.current);
+          void triggerBackgroundNotification('New Ticket Waiting for Payment', msg, `waiting-${ticket.id}`);
+        }
         setNotificationBanner({
           id: `waiting_${ticket.id}_${Date.now()}`,
           role: 'admin',
@@ -875,12 +988,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (kind === 'paid') {
       if (adminActive) {
         const msg = `Payment Received - ${custName} - Ticket PAID ✅`;
-        playTicketPaidSuccessSound();
+        triggerAdminBuyTicketAlarmIfEnabled(ticket);
+        if (!buyTicketAlarmRef.current?.enabled) {
+          playTicketPaidSuccessSound();
+        }
         void triggerBackgroundNotification('Ticket Payment Received', msg, `paid-admin-${ticket.id}`);
         setNotificationBanner({
           id: `paid_admin_${ticket.id}_${Date.now()}`,
           role: 'admin',
-          title: 'PayShap Payment Confirmed',
+          title: 'Ticket Purchase Confirmed',
           message: msg,
           variant: 'paid',
           ticketId: ticket.id,
@@ -1266,6 +1382,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     try {
+      const unsub = onSnapshot(
+        doc(db, 'settings', 'buyTicketAlarm'),
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            setBuyTicketAlarm((prev) => {
+              const merged: BuyTicketAlarmConfig = {
+                ...DEFAULT_NEW_ORDER_SOUND,
+                enabled: typeof data.enabled === 'boolean' ? data.enabled : true,
+                ...data,
+                customDataUrl: data.customDataUrl || prev.customDataUrl,
+              };
+              try {
+                localStorage.setItem('ub_buy_ticket_alarm', JSON.stringify(merged));
+              } catch {}
+              return merged;
+            });
+          }
+        },
+        () => {}
+      );
+      return () => unsub();
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
       const unsub = onSnapshot(collection(db, 'wallet_topups'), (snapshot) => {
         const list = snapshot.docs
           .map((d) => ({ id: d.id, ...(d.data() as any) }))
@@ -1642,6 +1785,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (typeof window !== 'undefined') {
       const clearAdminSession = () => {
         localStorage.removeItem('ub_admin_session');
+        localStorage.removeItem('ub_admin_email');
         sessionStorage.removeItem('ub_admin_5locks_passed');
         sessionStorage.removeItem('ub_app_active');
         const profileRaw = localStorage.getItem('ub_user_profile');
@@ -1698,6 +1842,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const cancelAdminLogin = async () => {
     localStorage.removeItem('ub_admin_session');
+    localStorage.removeItem('ub_admin_email');
     sessionStorage.removeItem('ub_admin_5locks_passed');
     sessionStorage.removeItem('ub_app_active');
     setPendingAdminAuthUser(null);
@@ -1723,6 +1868,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const terminateAdminSession = async () => {
     localStorage.removeItem('ub_admin_session');
+    localStorage.removeItem('ub_admin_email');
     sessionStorage.removeItem('ub_admin_5locks_passed');
     sessionStorage.removeItem('ub_app_active');
     setPendingAdminAuthUser(null);
@@ -1973,6 +2119,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             customerQrId: custQrId || undefined,
             photo: u.photoURL || existingData?.photo || undefined,
           };
+
+          if (userRole === 'Admin' || isEmailAdmin(cleanEmail)) {
+            localStorage.removeItem('ub_admin_session');
+            sessionStorage.removeItem('ub_admin_5locks_passed');
+            if (cleanEmail) {
+              localStorage.setItem('ub_admin_email', cleanEmail);
+            }
+            setPendingAdminAuthUser({ ...gProfile, role: 'Admin' });
+            setIsAdminSecurityModalOpen(true);
+            return;
+          }
 
           setCurrentUser(gProfile);
           localStorage.setItem('ub_user_profile', JSON.stringify(gProfile));
@@ -5261,6 +5418,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch (e) {}
 
         if (isAdmin) {
+          localStorage.removeItem('ub_admin_session');
+          sessionStorage.removeItem('ub_admin_5locks_passed');
+          localStorage.setItem('ub_admin_email', targetEmail.toLowerCase().trim());
           setPendingAdminAuthUser(loggedInUser);
           setIsAdminSecurityModalOpen(true);
           return {
@@ -5353,7 +5513,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const effectiveAdmin = isTargetAdminEmail || isDocAdmin;
         if (effectiveAdmin) {
           addAuthorizedAdminEmail(cleanTarget);
-          localStorage.setItem('ub_admin_session', 'true');
         }
 
         if (effectiveAdmin || isKnownPromoter || isExistingUserInFirestore) {
@@ -5399,6 +5558,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 console.warn('Firestore doc sync notice:', dbErr);
               }
 
+              if (effectiveAdmin) {
+                localStorage.removeItem('ub_admin_session');
+                sessionStorage.removeItem('ub_admin_5locks_passed');
+                localStorage.setItem('ub_admin_email', cleanTarget);
+                setPendingAdminAuthUser(loggedInUser);
+                setIsAdminSecurityModalOpen(true);
+                return {
+                  success: false,
+                  requireAdminSecurity: true,
+                  pendingUser: loggedInUser,
+                  email: targetEmail,
+                  fullName: loggedInUser.fullName || loggedInUser.name,
+                };
+              }
+
               const needsSecurity = isAccountSecurityRequired(targetEmail, role, existingFirestoreDoc);
               if (needsSecurity) {
                 setPendingSecurityAuth({
@@ -5421,9 +5595,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               localStorage.setItem(`ub_wallet_balance_${targetEmail}`, String(loggedInUser.walletBalance || 0));
               localStorage.setItem('ub_user_profile', JSON.stringify(loggedInUser));
               localStorage.setItem('ub_has_registered', 'true');
-              if (effectiveAdmin) {
-                localStorage.setItem('ub_admin_session', 'true');
-              }
               handleSetPendingVerification(null);
               setWelcomeMessage(`Welcome back, ${loggedInUser.name}!`);
               setCurrentRoute('/');
@@ -5772,6 +5943,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           photo: u.photoURL || existingData?.photo || undefined,
         };
 
+        if (userRole === 'Admin' || isEmailAdmin(cleanEmail)) {
+          localStorage.removeItem('ub_admin_session');
+          sessionStorage.removeItem('ub_admin_5locks_passed');
+          if (cleanEmail) {
+            localStorage.setItem('ub_admin_email', cleanEmail);
+          }
+          setPendingAdminAuthUser({ ...gProfile, role: 'Admin' });
+          setIsAdminSecurityModalOpen(true);
+          return { success: true };
+        }
+
         setCurrentUser(gProfile);
         localStorage.setItem('ub_user_profile', JSON.stringify(gProfile));
         localStorage.setItem('ub_has_registered', 'true');
@@ -5779,16 +5961,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (cleanEmail) {
           localStorage.setItem(`ub_wallet_balance_${cleanEmail}`, String(initialBal));
         }
-        if (userRole === 'Admin') {
-          localStorage.setItem('ub_admin_session', 'true');
-        }
         setWelcomeMessage(`Welcome ${gProfile.name}!`);
 
         // Navigate straight to the home screen for the selected role
-        if (userRole === 'Admin') {
-          setActiveModal(null);
-          setCurrentRoute('/dashboard');
-        } else if (userRole === 'Event Organiser' || userRole === 'Promoter') {
+        if (userRole === 'Event Organiser' || userRole === 'Promoter') {
           setCurrentRoute('/');
           setActiveModal('promoter-dashboard');
         } else if (userRole === 'Seller') {
@@ -5869,6 +6045,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // b) DELETE admin account session from the app / device (local storage, admin vault, cached admin data)
       const adminEmail = (currentUser?.email || '').toLowerCase().trim();
       localStorage.removeItem('ub_admin_session');
+      localStorage.removeItem('ub_admin_email');
+      sessionStorage.removeItem('ub_admin_5locks_passed');
+      sessionStorage.removeItem('ub_app_active');
+      setPendingAdminAuthUser(null);
       localStorage.removeItem('ub_admin_security_vault_v5');
       localStorage.removeItem('ub_admin_security_vault_v4');
       localStorage.removeItem('ub_has_registered');
@@ -7777,6 +7957,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createOrAssignPromoter,
         isAdminSecurityModalOpen,
         setIsAdminSecurityModalOpen,
+        pendingAdminAuthUser,
         openAdminLoginFlow,
         handleAdminSecuritySuccess,
         cancelAdminLogin,
@@ -7837,8 +8018,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         requestAdminSmsPermissionPopup,
         newOrderSound,
         updateNewOrderSound,
+        buyTicketAlarm,
+        updateBuyTicketAlarm,
         activePaymentAlarm,
         dismissPaymentAlarm,
+        activeBuyTicketAlarm,
+        dismissBuyTicketAlarm,
         testPaymentAlarm,
         supportRingEnabled,
         setSupportRingEnabled,

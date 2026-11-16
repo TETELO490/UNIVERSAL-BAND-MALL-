@@ -144,25 +144,6 @@ export function saveMultiLockConfig(
       ).catch((err) => console.warn('Could not save securitySettings to users collection:', err));
     }
 
-    if (
-      emailOrUid &&
-      (emailOrUid.toLowerCase() === 'tetelophokwane98@gmail.com' ||
-        emailOrUid.toLowerCase() === 'admin@universalband.co.za' ||
-        isAuthorizedAdminEmail(emailOrUid))
-    ) {
-      const adminPayload: Record<string, any> = {
-        updatedAt: new Date().toISOString(),
-        fingerprintEnrolled: Boolean(updated.fingerprintEnrolled && isRealCredentialId(updated.fingerprintCredentialId)),
-      };
-      if (updated.patternHash) adminPayload.patternHash = updated.patternHash;
-      if (updated.passwordHash) adminPayload.passwordHash = updated.passwordHash;
-      if (isRealCredentialId(updated.fingerprintCredentialId)) {
-        adminPayload.fingerprintCredentialId = updated.fingerprintCredentialId;
-      }
-      setDoc(doc(db, 'adminSecurity', 'admin_security_root'), adminPayload, { merge: true }).catch((err) =>
-        console.warn('Could not sync to adminSecurity collection:', err)
-      );
-    }
   } catch (e) {
     console.warn('Failed to save multi-lock config:', e);
   }
@@ -449,13 +430,23 @@ export async function enrollFingerprintBiometrics(
  * Never simulates or bypasses hardware verification.
  */
 export async function authenticateWithBiometrics(
-  expectedCredentialId?: string,
+  expectedCredentialId?: string | string[],
   emailOrUid?: string
 ): Promise<{ success: boolean; credentialId?: string; message: string }> {
   try {
     const cfgCred = getMultiLockConfig(emailOrUid).fingerprintCredentialId;
     const localCred = localStorage.getItem('ub_biometric_id');
-    const resolvedCredId = [expectedCredentialId, cfgCred, localCred].find((c) => isRealCredentialId(c)) || '';
+    const expectedArray = Array.isArray(expectedCredentialId)
+      ? expectedCredentialId
+      : expectedCredentialId
+      ? [expectedCredentialId]
+      : [];
+    const candidateIds = Array.from(
+      new Set(
+        [...expectedArray, cfgCred, localCred].filter((c): c is string => isRealCredentialId(c))
+      )
+    );
+    const resolvedCredId = candidateIds[0] || '';
 
     if (Capacitor.isNativePlatform()) {
       if (!resolvedCredId) {
@@ -510,7 +501,7 @@ export async function authenticateWithBiometrics(
       };
     }
 
-    if (!resolvedCredId) {
+    if (candidateIds.length === 0) {
       return {
         success: false,
         message: 'No hardware fingerprint is enrolled on this device yet. Enroll your fingerprint first.',
@@ -527,13 +518,11 @@ export async function authenticateWithBiometrics(
         timeout: 60000,
         userVerification: 'required',
         ...(rpId ? { rpId } : {}),
-        allowCredentials: [
-          {
-            type: 'public-key',
-            id: base64UrlToBuffer(resolvedCredId) as BufferSource,
-            transports: ['internal'],
-          },
-        ],
+        allowCredentials: candidateIds.map((credId) => ({
+          type: 'public-key' as const,
+          id: base64UrlToBuffer(credId) as BufferSource,
+          transports: ['internal'] as AuthenticatorTransport[],
+        })),
       },
     })) as PublicKeyCredential | null;
 
@@ -545,7 +534,7 @@ export async function authenticateWithBiometrics(
     }
 
     const returnedId = bufferToBase64Url(credential.rawId);
-    if (returnedId !== resolvedCredId) {
+    if (!candidateIds.includes(returnedId)) {
       return {
         success: false,
         message: 'Scanned fingerprint credential does not match the enrolled admin/account key.',

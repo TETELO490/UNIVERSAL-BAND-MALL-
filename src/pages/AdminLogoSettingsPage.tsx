@@ -124,26 +124,6 @@ export const AdminLogoSettingsPage: React.FC = () => {
       isAuthorizedAdminEmail(currentUser?.email) ||
       localStorage.getItem('ub_admin_session') === 'true');
 
-  if (!isAdmin) {
-    return (
-      <div className="pb-24 pt-6 px-4 max-w-md mx-auto">
-        <div className="bg-[#1A1A1A] border border-rose-500/30 rounded-2xl p-6 text-center space-y-3">
-          <Shield className="w-10 h-10 text-rose-400 mx-auto" />
-          <h1 className="text-lg font-extrabold text-white">Admin Access Only</h1>
-          <p className="text-xs text-gray-400">
-            Only the administrator can access logo settings and branding.
-          </p>
-          <button
-            onClick={() => navigateTo('/')}
-            className="w-full bg-[#FACC15] text-black font-extrabold py-2.5 rounded-xl text-xs hover:bg-yellow-400 transition cursor-pointer"
-          >
-            Back to Home
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [optimizedDataUrl, setOptimizedDataUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>(
@@ -361,6 +341,26 @@ export const AdminLogoSettingsPage: React.FC = () => {
       setIsUploading(false);
     }
   };
+
+  if (!isAdmin) {
+    return (
+      <div className="pb-24 pt-6 px-4 max-w-md mx-auto">
+        <div className="bg-[#1A1A1A] border border-rose-500/30 rounded-2xl p-6 text-center space-y-3">
+          <Shield className="w-10 h-10 text-rose-400 mx-auto" />
+          <h1 className="text-lg font-extrabold text-white">Admin only</h1>
+          <p className="text-xs text-gray-400">
+            Only the administrator can access logo settings and branding.
+          </p>
+          <button
+            onClick={() => navigateTo('/')}
+            className="w-full bg-[#FACC15] text-black font-extrabold py-2.5 rounded-xl text-xs hover:bg-yellow-400 transition cursor-pointer"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white pb-24 pt-4 px-4 max-w-md mx-auto">
