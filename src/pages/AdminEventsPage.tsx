@@ -21,6 +21,7 @@ import { TymebankSmsModal } from '../components/modals/TymebankSmsModal';
 import { SendPayshapRequestModal } from '../components/modals/SendPayshapRequestModal';
 import { EventItem, Ticket } from '../types';
 import { isTicketWaitingPayment, isTicketPaid } from '../utils/ticketStatus';
+import { EventQrShareCard } from '../components/events/EventQrShareCard';
 
 export const AdminEventsPage: React.FC = () => {
   const {
@@ -407,6 +408,9 @@ export const AdminEventsPage: React.FC = () => {
                     </span>
                   </div>
                 </div>
+
+                {/* Auto Event QR Code & Unique Link */}
+                <EventQrShareCard event={ev} compact />
 
                 {/* CONFIRMED PAYMENTS INSIDE THAT EVENT (Requirement 11) */}
                 <div className="pt-2 border-t border-white/10 space-y-1.5">

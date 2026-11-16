@@ -131,6 +131,16 @@
           "type": "string",
           "description": "Short uppercase event code without spaces for PayShap reference matching",
           "maxLength": 24
+        },
+        "eventSlug": {
+          "type": "string",
+          "description": "Unique URL slug for this event e.g. soweto-fest-2026",
+          "maxLength": 140
+        },
+        "eventLink": {
+          "type": "string",
+          "description": "Full unique direct web URL for this event used for QR code generation",
+          "maxLength": 300
         }
       },
       "required": ["id", "storeId", "title", "date", "location", "price", "status", "category"]

@@ -19,6 +19,8 @@ import {
   LogIn,
   LogOut,
   RefreshCw,
+  Calendar,
+  Plus,
 } from 'lucide-react';
 import { TicketQrScannerModal } from './TicketQrScannerModal';
 import {
@@ -28,10 +30,13 @@ import {
   syncPendingMovementsWithFirestore,
 } from '../../utils/attendanceService';
 import { AttendanceStatus } from '../../types';
+import { EventQrShareCard } from '../events/EventQrShareCard';
+import { isEventExpired } from '../../utils/dateHelper';
 
 export const PromoterDashboardModal: React.FC = () => {
   const {
     stores,
+    events,
     tickets,
     currentUser,
     currentRoute,
@@ -40,6 +45,7 @@ export const PromoterDashboardModal: React.FC = () => {
     checkInTicket,
     checkOutTicket,
     setSelectedStoreId,
+    setEditingEvent,
   } = useApp();
 
   const [scanCode, setScanCode] = useState('');
@@ -76,11 +82,20 @@ export const PromoterDashboardModal: React.FC = () => {
     stores.find((s) => s.id === currentUser.assignedStoreId) || stores[0];
   const assignedStoreId = assignedStore?.id || currentUser.assignedStoreId || '';
 
-  // Promoter can ONLY see live status for HIS OWN events/venue
+  // Promoter / Organiser can ONLY see live status for HIS OWN events/venue
   const storeTickets = useMemo(() => {
     if (!assignedStoreId) return [];
     return tickets.filter((t) => t.storeId === assignedStoreId);
   }, [tickets, assignedStoreId]);
+
+  const organiserEvents = useMemo(() => {
+    return events.filter((ev) => {
+      if (isEventExpired(ev)) return false;
+      if (ev.creatorId && currentUser?.id && ev.creatorId === currentUser.id) return true;
+      if (assignedStoreId && ev.storeId === assignedStoreId) return true;
+      return false;
+    });
+  }, [events, currentUser?.id, assignedStoreId]);
 
   // Live Attendance Counts for Promoter's Own Event
   const liveStats = useMemo(() => {
@@ -223,6 +238,64 @@ export const PromoterDashboardModal: React.FC = () => {
             No venue assigned to your account yet. Ask an Admin to assign a venue.
           </div>
         )}
+
+        {/* MY EVENTS & AUTO QR CODES (Organiser Dashboard) */}
+        <div className="bg-[#121212] rounded-2xl p-3.5 border border-[#FACC15]/25 mb-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Calendar className="w-4 h-4 text-[#FACC15]" />
+              <span className="text-[11px] font-black uppercase tracking-wider text-white">
+                My Events &amp; Auto QR ({organiserEvents.length})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingEvent(null);
+                setActiveModal('add-event');
+              }}
+              className="bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-[10px] px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer transition"
+            >
+              <Plus className="w-3 h-3 stroke-[3]" />
+              <span>New Event</span>
+            </button>
+          </div>
+
+          {organiserEvents.length === 0 ? (
+            <p className="text-[11px] text-gray-400 bg-black/40 p-2.5 rounded-xl border border-white/5">
+              No active events posted yet. Tap &quot;New Event&quot; to publish an event and automatically generate its unique QR code &amp; link.
+            </p>
+          ) : (
+            <div className="space-y-3 max-h-96 overflow-y-auto pr-0.5">
+              {organiserEvents.map((ev) => (
+                <div
+                  key={ev.id}
+                  className="bg-[#181818] border border-white/10 rounded-xl p-2.5 space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-black text-white truncate">{ev.title}</h4>
+                      <p className="text-[10px] text-gray-400">
+                        {ev.date} • {ev.price}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingEvent(ev);
+                        setActiveModal('add-event');
+                      }}
+                      className="text-[10px] bg-white/10 hover:bg-white/20 text-gray-200 font-bold px-2 py-1 rounded-lg cursor-pointer shrink-0"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                  <EventQrShareCard event={ev} compact />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Offline Cache & Sync Banner */}
         <div className="mb-3 p-2.5 bg-black/60 rounded-2xl border border-white/5 flex items-center justify-between text-xs">

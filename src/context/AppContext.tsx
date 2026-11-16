@@ -43,6 +43,12 @@ import { isAlcoholItem } from '../utils/ageHelper';
 import { isAuthorizedAdminEmail, addAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import { formatMovementTime, queueOfflineMovement } from '../utils/attendanceService';
 import {
+  generateUniqueEventSlug,
+  getPublicWebOrigin,
+  findEventBySlugOrId,
+  getEventRoutePath,
+} from '../utils/eventLinkHelper';
+import {
   DEFAULT_NEW_ORDER_SOUND,
   playNewOrderSound,
   playTicketPaidSuccessSound,
@@ -370,6 +376,7 @@ interface AppContextType {
   setEditingEvent: (event: EventItem | null) => void;
   eventActionError: string | null;
   setEventActionError: (err: string | null) => void;
+  eventsLoaded: boolean;
   addNewEvent: (eventData: Omit<EventItem, 'id'>) => Promise<boolean>;
   updateEvent: (eventId: string, updatedData: Partial<EventItem>) => Promise<boolean>;
   deleteEvent: (eventId: string) => Promise<boolean>;
@@ -618,6 +625,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {}
     return [];
   });
+  const [eventsLoaded, setEventsLoaded] = useState<boolean>(false);
   const [tickets, setTickets] = useState<Ticket[]>(() => {
     try {
       const saved = localStorage.getItem('ub_user_tickets');
@@ -2520,26 +2528,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
+    let finalRoute = resolvedRoute;
     if (resolvedRoute.startsWith('/store/')) {
       const storeId = resolvedRoute.replace('/store/', '');
       setSelectedStoreId(storeId);
-      setCurrentRoute('/store/' + storeId);
-    } else if (resolvedRoute.startsWith('/events/')) {
-      const eventId = resolvedRoute.replace('/events/', '');
-      const ev = events.find((e) => e.id === eventId);
-      if (ev) {
-        if (!isEventExpired(ev)) {
-          setSelectedBuyingEvent(ev);
-        } else {
-          setWelcomeMessage('This event has already passed and is no longer available in discovery.');
-        }
-      }
-      setCurrentRoute(resolvedRoute);
+      finalRoute = '/store/' + storeId;
+      setCurrentRoute(finalRoute);
+    } else if (resolvedRoute.startsWith('/event/') || resolvedRoute.startsWith('/events/')) {
+      const slugOrId = resolvedRoute.replace(/^\/events?\//i, '');
+      const ev = findEventBySlugOrId(events, slugOrId);
+      finalRoute = ev ? getEventRoutePath(ev, events) : `/event/${slugOrId}`;
+      setSelectedStoreId(null);
+      setCurrentRoute(finalRoute);
     } else {
       setCurrentRoute(resolvedRoute);
       if (resolvedRoute === '/' || resolvedRoute === '/stores') {
         setSelectedStoreId(null);
       }
+    }
+
+    if (
+      typeof window !== 'undefined' &&
+      window.location.protocol.startsWith('http') &&
+      !window.location.pathname.includes('/android_asset/') &&
+      window.location.pathname !== finalRoute
+    ) {
+      try {
+        window.history.pushState({}, '', finalRoute);
+      } catch {}
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -2623,8 +2639,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               localStorage.setItem('ub_local_events', '[]');
             } catch (e) {}
           }
+          setEventsLoaded(true);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'events')
+        (err) => {
+          setEventsLoaded(true);
+          handleFirestoreError(err, OperationType.LIST, 'events');
+        }
       );
 
       // 3. Tickets listener (also drives Admin New-Order alerts and PAID auto-confirmation banners)
@@ -4389,9 +4409,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? Math.max(1, Math.floor(Number(eventData.ticketsAvailable)))
         : 200;
 
+    const eventSlug = generateUniqueEventSlug(eventData.title, newId, events);
+    const eventLink = `${getPublicWebOrigin()}/event/${eventSlug}`;
+
     const fullEvent: EventItem = {
       id: newId,
       ...eventData,
+      eventSlug,
+      eventLink,
       ticketsAvailable: Number.isFinite(parsedLimit) ? parsedLimit : 200,
       ticketsSold: eventData.ticketsSold ?? 0,
       creatorId: currentUser.id,
@@ -4491,7 +4516,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    const cleanUpdates = cleanForFirestore(updatedData);
+    const nextTitle = updatedData.title !== undefined ? updatedData.title : existingEvent?.title || 'event';
+    const shouldRefreshSlug = updatedData.title !== undefined || !existingEvent?.eventSlug;
+    const nextEventSlug = shouldRefreshSlug
+      ? generateUniqueEventSlug(nextTitle, eventId, events)
+      : existingEvent?.eventSlug || generateUniqueEventSlug(nextTitle, eventId, events);
+    const nextEventLink = `${getPublicWebOrigin()}/event/${nextEventSlug}`;
+
+    const cleanUpdates = cleanForFirestore({
+      ...updatedData,
+      eventSlug: nextEventSlug,
+      eventLink: nextEventLink,
+    });
     const mergedEstimate = existingEvent ? { ...existingEvent, ...cleanUpdates } : cleanUpdates;
     if (estimateDocByteSize(mergedEstimate) > 950_000) {
       setEventActionError(
@@ -8055,6 +8091,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setEditingEvent,
         eventActionError,
         setEventActionError,
+        eventsLoaded,
         addNewEvent,
         updateEvent,
         deleteEvent,

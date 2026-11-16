@@ -40,6 +40,8 @@ export interface EventItem {
   earlyBirdVipLimit?: number | string;
   eventCode?: string;
   kidsPrice?: number | string;
+  eventSlug?: string;
+  eventLink?: string;
 }
 
 export type AttendanceStatus = 'OUTSIDE' | 'INSIDE' | 'EXITED';

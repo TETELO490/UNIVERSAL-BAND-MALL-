@@ -48,6 +48,7 @@ const TermsPage = lazyWithRetry(() => import('./pages/TermsPage').then(m => ({ d
 const PrivacyPolicyPage = lazyWithRetry(() => import('./pages/PrivacyPolicyPage').then(m => ({ default: m.PrivacyPolicyPage })));
 const RefundPolicyPage = lazyWithRetry(() => import('./pages/RefundPolicyPage').then(m => ({ default: m.RefundPolicyPage })));
 const StoreDetailPage = lazyWithRetry(() => import('./pages/StoreDetailPage').then(m => ({ default: m.StoreDetailPage })));
+const EventDetailPage = lazyWithRetry(() => import('./pages/EventDetailPage').then(m => ({ default: m.EventDetailPage })));
 const FoodMenuPage = lazyWithRetry(() => import('./pages/FoodMenuPage').then(m => ({ default: m.FoodMenuPage })));
 const RegisterPage = lazyWithRetry(() => import('./pages/RegisterPage').then(m => ({ default: m.RegisterPage })));
 const LoginPage = lazyWithRetry(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
@@ -191,6 +192,9 @@ const AppContent: React.FC = () => {
     }
 
     // 4. Discovery, Events & Catalog (Accessible to everyone - NO login wall)
+    if (currentRoute.startsWith('/event/') || currentRoute.startsWith('/events/')) {
+      return <EventDetailPage />;
+    }
     if (currentRoute === '/' || currentRoute === '/home' || currentRoute === '/events' || currentRoute === '/stores') {
       return <StoresPage />;
     }

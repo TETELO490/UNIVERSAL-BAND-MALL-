@@ -59,6 +59,7 @@ import { DatePickerInput } from '../components/DatePickerInput';
 import { isSameDay } from '../utils/dateHelper';
 import { MallOrder } from '../types';
 import { MealCustomizerModal } from '../components/modals/MealCustomizerModal';
+import { EventQrShareCard } from '../components/events/EventQrShareCard';
 
 export const StoreDetailPage: React.FC = () => {
   const {
@@ -1797,6 +1798,12 @@ export const StoreDetailPage: React.FC = () => {
                               Cancel
                             </button>
                           </div>
+                        </div>
+                      )}
+
+                      {isOwner && (
+                        <div className="pt-2">
+                          <EventQrShareCard event={event} compact />
                         </div>
                       )}
                     </div>

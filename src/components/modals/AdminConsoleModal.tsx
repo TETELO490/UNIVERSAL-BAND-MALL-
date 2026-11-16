@@ -41,6 +41,7 @@ import { maskPhoneNumber, normalizePhone } from '../../utils/attendanceService';
 import { getEventTicketStats } from '../../utils/eventTicketLimit';
 import { isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
 import { AttendanceStatus, Ticket } from '../../types';
+import { EventQrShareCard } from '../events/EventQrShareCard';
 
 export const AdminConsoleModal: React.FC = () => {
   const {
@@ -1100,6 +1101,9 @@ export const AdminConsoleModal: React.FC = () => {
                         </span>
                       </div>
                     </div>
+
+                    {/* Auto Event QR Code & Unique Direct Link */}
+                    <EventQrShareCard event={item.event} compact />
 
                     {/* CONFIRMED PAYMENTS (Requirement 11) */}
                     <div className="pt-1.5 border-t border-white/5 space-y-1">

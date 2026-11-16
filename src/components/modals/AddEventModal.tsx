@@ -20,6 +20,9 @@ import { isAuthorizedAdminEmail } from '../../utils/cryptoHelper';
 import { getEventTicketStats } from '../../utils/eventTicketLimit';
 import { DatePickerInput } from '../DatePickerInput';
 import { ensurePhotosPermission } from '../../utils/nativePermissions';
+import { EventQrShareCard } from '../events/EventQrShareCard';
+import { generateUniqueEventSlug, getPublicWebOrigin } from '../../utils/eventLinkHelper';
+import { EventItem } from '../../types';
 
 export const AddEventModal: React.FC = () => {
   const {
@@ -96,6 +99,7 @@ export const AddEventModal: React.FC = () => {
   const [imageUploading, setImageUploading] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [success, setSuccess] = useState<boolean>(false);
+  const [publishedEventSnapshot, setPublishedEventSnapshot] = useState<EventItem | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const soldStats = useMemo(() => {
@@ -107,6 +111,7 @@ export const AddEventModal: React.FC = () => {
     setFormError(null);
     setEventActionError(null);
     setSuccess(false);
+    setPublishedEventSnapshot(null);
     if (editingEvent) {
       const hasAttachedStore = Boolean(editingEvent.storeId && editingEvent.storeId.trim() !== '');
       setHasStoreAttachment(hasAttachedStore);
@@ -341,10 +346,31 @@ export const AddEventModal: React.FC = () => {
 
     setLoading(false);
     if (ok) {
+      const matched =
+        (isEditing && editingEvent
+          ? events.find((ev) => ev.id === editingEvent.id)
+          : events.find((ev) => ev.title.trim() === title.trim() && ev.date === date.trim())) || null;
+
+      if (matched) {
+        setPublishedEventSnapshot(matched);
+      } else {
+        const tempId = editingEvent?.id || `ev-${Date.now()}`;
+        const slug = generateUniqueEventSlug(title.trim(), tempId, events);
+        setPublishedEventSnapshot({
+          id: tempId,
+          storeId: finalStoreId,
+          title: title.trim(),
+          date: date.trim(),
+          location: location.trim() || 'TBA',
+          price: baseDisplayPrice,
+          status,
+          category,
+          imageUrl,
+          eventSlug: slug,
+          eventLink: `${getPublicWebOrigin()}/event/${slug}`,
+        });
+      }
       setSuccess(true);
-      setTimeout(() => {
-        handleClose();
-      }, 1100);
     }
   };
 
@@ -416,18 +442,40 @@ export const AddEventModal: React.FC = () => {
         </div>
 
         {success ? (
-          <div className="py-8 text-center animate-in zoom-in-95">
-            <CheckCircle className="w-12 h-12 text-[#FACC15] mx-auto mb-2" />
-            <h3 className="text-white font-bold text-base">
-              {isEditing ? 'Event Updated Successfully!' : 'Published Successfully!'}
-            </h3>
-            <p className="text-xs text-gray-300 mt-1 max-w-xs mx-auto">
-              {isEditing
-                ? `Changes and ticket limit (${parsedTicketLimitInput} max) are now live.`
-                : hasStoreAttachment && storeId
-                ? 'Your event is now hosted under your store!'
-                : 'Your standalone event is live on Discovery for all attendees to find!'}
-            </p>
+          <div className="py-4 space-y-4 animate-in zoom-in-95">
+            <div className="text-center">
+              <CheckCircle className="w-12 h-12 text-[#FACC15] mx-auto mb-2" />
+              <h3 className="text-white font-bold text-base">
+                {isEditing ? 'Event Updated Successfully!' : 'Published Successfully!'}
+              </h3>
+              <p className="text-xs text-gray-300 mt-1 max-w-xs mx-auto">
+                {isEditing
+                  ? `Changes and ticket limit (${parsedTicketLimitInput} max) are now live.`
+                  : 'Your unique Event Link and QR Code have been created automatically.'}
+              </p>
+            </div>
+
+            {publishedEventSnapshot && (
+              <EventQrShareCard
+                event={
+                  events.find(
+                    (ev) =>
+                      ev.id === publishedEventSnapshot.id ||
+                      (ev.title === publishedEventSnapshot.title &&
+                        ev.date === publishedEventSnapshot.date)
+                  ) || publishedEventSnapshot
+                }
+                compact
+              />
+            )}
+
+            <button
+              type="button"
+              onClick={handleClose}
+              className="w-full py-3 rounded-xl bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs cursor-pointer transition"
+            >
+              Done
+            </button>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
