@@ -49,9 +49,9 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
   if (!isOpen) return null;
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isOwner = roleLower === 'admin' || roleLower === 'promoter' || roleLower === 'owner';
-  const isManager = roleLower === 'manager' && (!storeId || currentUser?.assignedStoreId === storeId || currentUser?.assignedStoreName === storeName);
-  const canViewSales = isOwner || isManager || roleLower === 'admin' || roleLower === 'promoter';
+  const isOwner = roleLower === 'admin' || roleLower === 'promoter' || roleLower === 'owner' || roleLower === 'event organiser' || roleLower === 'organizer';
+  const isManager = (roleLower === 'manager' || roleLower === 'store manager') && (!storeId || currentUser?.assignedStoreId === storeId || currentUser?.assignedStoreName === storeName);
+  const canViewSales = isOwner || isManager || roleLower === 'admin' || roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer' || roleLower === 'store manager';
 
   // Filter messages for this store
   const messages = storeMessages.filter(

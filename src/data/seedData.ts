@@ -207,7 +207,7 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80',
     description: 'The biggest all-white celebration in Limpopo. Featuring top SA DJs, VIP cabanas, and cashless wristband entry.',
     ticketsAvailable: 500,
-    ticketsSold: 84,
+    ticketsSold: 0,
   },
   {
     id: 'event-spring-splash-fest',
@@ -222,7 +222,7 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=800&q=80',
     description: 'Poolside day festival with live performances, cocktail bar, and water stage.',
     ticketsAvailable: 400,
-    ticketsSold: 112,
+    ticketsSold: 0,
   },
   {
     id: 'event-amapiano-street-fest',
@@ -237,7 +237,7 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?auto=format&fit=crop&w=800&q=80',
     description: 'National Reconciliation Day Amapiano celebration featuring South Africa’s finest hitmakers.',
     ticketsAvailable: 1200,
-    ticketsSold: 430,
+    ticketsSold: 0,
   },
   {
     id: 'event-kasi-food-culture',
@@ -252,7 +252,7 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=800&q=80',
     description: 'Celebrate local flavors with artisan kotas, braai masterclasses, and craft beer tasting.',
     ticketsAvailable: 600,
-    ticketsSold: 98,
+    ticketsSold: 0,
   },
   {
     id: 'event-nye-golden-countdown',
@@ -267,7 +267,7 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?auto=format&fit=crop&w=800&q=80',
     description: 'Ring in 2027 with laser fireworks, champagne towers, and non-stop live music.',
     ticketsAvailable: 800,
-    ticketsSold: 210,
+    ticketsSold: 0,
   },
   {
     id: 'event-deep-house-sunset',
@@ -282,73 +282,13 @@ export const INITIAL_EVENTS: EventItem[] = [
     imageUrl: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&w=800&q=80',
     description: 'Sundowners, soulful afro-house beats, and lakeside relaxation.',
     ticketsAvailable: 350,
-    ticketsSold: 75,
+    ticketsSold: 0,
   },
 ];
 
 
 
-export const INITIAL_RESERVATIONS: Reservation[] = [
-  {
-    id: 'RES-84210',
-    storeId: 'florence-palm',
-    storeName: 'Florence Palm',
-    eventId: 'event-amapiano-groove',
-    eventTitle: 'Amapiano Sunset Groove',
-    eventDate: 'Today, 20:00',
-    eventTimestamp: Date.now() + 4 * 60 * 60 * 1000, // In 4 hours (eligible for 15% food fee)
-    customerIdNumber: '9804155123088',
-    customerName: 'System Admin',
-    customerPhone: '0821234567',
-    customerEmail: 'admin@universalband.co.za',
-    itemType: 'food',
-    itemId: 'food-kota',
-    itemName: 'Special Kota (Cheese & Polony)',
-    itemPrice: 50.00,
-    itemPriceFormatted: 'R50',
-    status: 'reserved',
-    createdAt: new Date(Date.now() - 3600000).toISOString(),
-  },
-  {
-    id: 'RES-91823',
-    storeId: 'florence-palm',
-    storeName: 'Florence Palm',
-    eventId: 'event-all-white-gala',
-    eventTitle: 'Spring All-White VIP Gala',
-    eventDate: 'In 10 Days',
-    eventTimestamp: Date.now() + 10 * 24 * 60 * 60 * 1000, // In 10 days (Tier 1: 5% fee)
-    customerIdNumber: '9804155123088',
-    customerName: 'System Admin',
-    customerPhone: '0821234567',
-    customerEmail: 'admin@universalband.co.za',
-    itemType: 'alcohol',
-    itemId: 'alc-heineken',
-    itemName: 'Heineken Draught Bucket (6)',
-    itemPrice: 160.00,
-    itemPriceFormatted: 'R160',
-    status: 'reserved',
-    createdAt: new Date(Date.now() - 7200000).toISOString(),
-  },
-  {
-    id: 'RES-31409',
-    storeId: 'mphela-resort',
-    storeName: 'Mphela resort',
-    eventId: 'event-spring-splash',
-    eventTitle: 'Spring Pool Festival',
-    eventDate: 'In 3 Days',
-    eventTimestamp: Date.now() + 3 * 24 * 60 * 60 * 1000, // In 3 days (Tier 2: 10% fee)
-    customerIdNumber: '9901015000087',
-    customerName: 'Kagiso Mokoena',
-    customerPhone: '0825551234',
-    itemType: 'alcohol',
-    itemId: 'alc-hennessy',
-    itemName: 'Hennessy VS 750ml Bottle',
-    itemPrice: 850.00,
-    itemPriceFormatted: 'R850',
-    status: 'reserved',
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-  },
-];
+export const INITIAL_RESERVATIONS: Reservation[] = [];
 
 export const INITIAL_MENU_ITEMS: MenuItemDoc[] = [
   // Florence Palm Items

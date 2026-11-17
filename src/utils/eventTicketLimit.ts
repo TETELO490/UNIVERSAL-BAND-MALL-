@@ -1,4 +1,5 @@
 import { EventItem, Ticket } from '../types';
+import { isTicketPaid } from './ticketStatus';
 
 export interface TicketTierInfo {
   id: string;
@@ -50,7 +51,7 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
     };
   }
 
-  const eventTickets = tickets.filter((t) => t.eventId === event.id);
+  const eventTickets = tickets.filter((t) => t.eventId === event.id && isTicketPaid(t));
 
   // Prices (empty = does not exist)
   const ebPrice = parsePriceNum(event.earlyBirdPrice);

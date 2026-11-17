@@ -6339,16 +6339,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     collectionName: 'menu_food' | 'menu_alcohol' | 'menu_softdrinks',
     itemData: Omit<MenuItem, 'id'>
   ): Promise<boolean> => {
-    if (currentUser.role !== 'Admin' && currentUser.role !== 'Promoter') {
-      setWelcomeMessage('Action Restricted: Only Admin or Promoter can add menu items.');
+    const roleLower = (currentUser.role || '').toLowerCase();
+    const isOrganizerOrAdmin =
+      roleLower === 'admin' ||
+      roleLower === 'promoter' ||
+      roleLower === 'event organiser' ||
+      roleLower === 'organizer' ||
+      roleLower === 'owner';
+
+    if (!isOrganizerOrAdmin) {
+      setWelcomeMessage('Action Restricted: Only Admin or Organizer can add menu items.');
       return false;
     }
 
-    if (currentUser.role === 'Promoter') {
+    if (roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer') {
       const allowedStore = currentUser.assignedStoreId;
       if (allowedStore && itemData.storeId && itemData.storeId !== allowedStore) {
         setWelcomeMessage(
-          `Unauthorized: You are assigned to manage ${currentUser.assignedStoreName || allowedStore}. You cannot add menu items to another promoter's store.`
+          `Unauthorized: You are assigned to manage ${currentUser.assignedStoreName || allowedStore}. You cannot add menu items to another store.`
         );
         return false;
       }

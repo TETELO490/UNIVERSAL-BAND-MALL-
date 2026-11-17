@@ -265,13 +265,18 @@ export const StoreDetailPage: React.FC = () => {
   const currentWalletId = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
   const userAge = getUserAge(currentUser);
 
-  // Store staff check: Owner, Manager, or Worker assigned to this store
   const roleLower = (currentUser?.role || '').toLowerCase();
   const isOwner = Boolean(
     roleLower === 'admin' ||
     roleLower === 'owner' ||
+    roleLower === 'promoter' ||
+    roleLower === 'event organiser' ||
+    roleLower === 'organizer' ||
+    roleLower === 'store manager' ||
+    roleLower === 'manager' ||
     (roleLower === 'promoter' && (store?.ownerId === currentWalletId || store?.promoterId === currentUser.id || currentUser.assignedStoreId === store?.id)) ||
-    store?.ownerId === currentWalletId
+    store?.ownerId === currentWalletId ||
+    currentUser?.assignedStoreId === store?.id
   );
   const isManager = Boolean(
     roleLower === 'manager' &&

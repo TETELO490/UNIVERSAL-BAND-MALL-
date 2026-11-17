@@ -32,12 +32,19 @@ import {
 import { AttendanceStatus } from '../../types';
 import { EventQrShareCard } from '../events/EventQrShareCard';
 import { isEventExpired } from '../../utils/dateHelper';
+import { isTicketPaid } from '../../utils/ticketStatus';
+import { AddMenuItemModal } from './AddMenuItemModal';
+import { deleteDoc, doc } from 'firebase/firestore';
+import { db } from '../../firebase';
 
 export const PromoterDashboardModal: React.FC = () => {
   const {
     stores,
     events,
     tickets,
+    menuFood,
+    menuAlcohol,
+    menuSoftDrinks,
     currentUser,
     currentRoute,
     setActiveModal,
@@ -82,10 +89,10 @@ export const PromoterDashboardModal: React.FC = () => {
     stores.find((s) => s.id === currentUser.assignedStoreId) || stores[0];
   const assignedStoreId = assignedStore?.id || currentUser.assignedStoreId || '';
 
-  // Promoter / Organiser can ONLY see live status for HIS OWN events/venue
+  // Promoter / Organiser can ONLY see live status for HIS OWN events/venue (ONLY PAID TICKETS)
   const storeTickets = useMemo(() => {
     if (!assignedStoreId) return [];
-    return tickets.filter((t) => t.storeId === assignedStoreId);
+    return tickets.filter((t) => t.storeId === assignedStoreId && isTicketPaid(t));
   }, [tickets, assignedStoreId]);
 
   const organiserEvents = useMemo(() => {
@@ -97,11 +104,22 @@ export const PromoterDashboardModal: React.FC = () => {
     });
   }, [events, currentUser?.id, assignedStoreId]);
 
+  const [addMenuType, setAddMenuType] = useState<'food' | 'alcohol' | 'softdrink' | null>(null);
+
+  const storeMenuItems = useMemo(() => {
+    if (!assignedStoreId) return [];
+    const food = menuFood.filter(i => i.storeId === assignedStoreId);
+    const alcohol = menuAlcohol.filter(i => i.storeId === assignedStoreId);
+    const soft = menuSoftDrinks.filter(i => i.storeId === assignedStoreId);
+    return [...food, ...alcohol, ...soft];
+  }, [menuFood, menuAlcohol, menuSoftDrinks, assignedStoreId]);
+
   // Live Attendance Counts for Promoter's Own Event
   const liveStats = useMemo(() => {
     let inside = 0;
     let outside = 0;
     let exited = 0;
+    let totalRevenue = 0;
 
     storeTickets.forEach((t) => {
       const status: AttendanceStatus =
@@ -109,6 +127,9 @@ export const PromoterDashboardModal: React.FC = () => {
       if (status === 'INSIDE') inside++;
       else if (status === 'EXITED') exited++;
       else outside++;
+
+      const pNum = parseFloat(String(t.price || '').replace(/[^0-9.]/g, '')) || 0;
+      totalRevenue += pNum;
     });
 
     return {
@@ -116,7 +137,7 @@ export const PromoterDashboardModal: React.FC = () => {
       inside,
       outside,
       exited,
-      revenue: storeTickets.length * 150,
+      revenue: totalRevenue,
     };
   }, [storeTickets]);
 
@@ -291,6 +312,85 @@ export const PromoterDashboardModal: React.FC = () => {
                     </button>
                   </div>
                   <EventQrShareCard event={ev} compact />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* FOOD MENU & PRE-ORDERS (Organiser Menu Management) */}
+        <div className="bg-[#121212] rounded-2xl p-3.5 border border-[#FACC15]/25 mb-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Utensils className="w-4 h-4 text-[#FACC15]" />
+              <span className="text-[11px] font-black uppercase tracking-wider text-white">
+                Food Menu &amp; Pre-Orders ({storeMenuItems.length})
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setAddMenuType('food')}
+                className="bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-[10px] px-2 py-1 rounded-lg flex items-center gap-1 cursor-pointer transition"
+              >
+                <Plus className="w-3 h-3 stroke-[3]" />
+                <span>+ Food</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMenuType('alcohol')}
+                className="bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] px-2 py-1 rounded-lg flex items-center gap-1 cursor-pointer transition"
+              >
+                <Plus className="w-3 h-3 stroke-[3]" />
+                <span>+ Alcohol</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMenuType('softdrink')}
+                className="bg-blue-500 hover:bg-blue-400 text-white font-black text-[10px] px-2 py-1 rounded-lg flex items-center gap-1 cursor-pointer transition"
+              >
+                <Plus className="w-3 h-3 stroke-[3]" />
+                <span>+ Drink</span>
+              </button>
+            </div>
+          </div>
+
+          {storeMenuItems.length === 0 ? (
+            <p className="text-[11px] text-gray-400 bg-black/40 p-2.5 rounded-xl border border-white/5">
+              No food or drink items added yet. Tap &quot;+ Food&quot; or &quot;+ Alcohol&quot; to create items for event pre-orders.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-0.5">
+              {storeMenuItems.map((item) => (
+                <div
+                  key={item.id}
+                  className="bg-[#181818] border border-white/10 rounded-xl p-2.5 flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <img
+                      src={item.imageUrl}
+                      alt={item.name}
+                      className="w-8 h-8 rounded-lg object-cover shrink-0 border border-white/10"
+                    />
+                    <div className="min-w-0">
+                      <h5 className="text-xs font-black text-white truncate">{item.name}</h5>
+                      <p className="text-[10px] text-[#FACC15] font-semibold">{item.price} • {item.category}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const col = item.category === 'alcohol' ? 'menu_alcohol' : item.category === 'softdrink' ? 'menu_softdrinks' : 'menu_food';
+                        await deleteDoc(doc(db, col, item.id));
+                      } catch (err) {
+                        console.warn('Delete menu item error:', err);
+                      }
+                    }}
+                    className="text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 px-2 py-1 rounded-lg cursor-pointer transition"
+                  >
+                    Delete
+                  </button>
                 </div>
               ))}
             </div>
@@ -530,6 +630,14 @@ export const PromoterDashboardModal: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Add Food / Drink Menu Item Modal for Organizer */}
+      {addMenuType && (
+        <AddMenuItemModal
+          type={addMenuType}
+          onClose={() => setAddMenuType(null)}
+        />
+      )}
 
       {/* Live Camera & Phone Search Scanner for Promoter */}
       <TicketQrScannerModal
