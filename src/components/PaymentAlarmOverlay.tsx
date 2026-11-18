@@ -110,14 +110,14 @@ export const PaymentAlarmOverlay: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
-              Admin Ticket Purchase Alert
+            <p className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
+              PayShap Payment Request Alert
             </p>
             <h2
               id="ticket-alarm-title"
               className="text-2xl font-black text-white tracking-tight"
             >
-              NEW TICKET BOUGHT
+              WAITING FOR PAYMENT
             </h2>
           </div>
         </div>
@@ -134,14 +134,29 @@ export const PaymentAlarmOverlay: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => dismissBuyTicketAlarm()}
-          className="w-full min-h-[52px] bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white font-black text-sm rounded-2xl flex items-center justify-center gap-2 shadow-xl cursor-pointer transition"
-        >
-          <XOctagon className="w-5 h-5 stroke-[2.5]" />
-          <span>STOP / DISMISS ALARM</span>
-        </button>
+        <div className="space-y-2.5 pt-1">
+          <button
+            type="button"
+            onClick={() => dismissBuyTicketAlarm()}
+            className="w-full min-h-[52px] bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white font-black text-sm rounded-2xl flex items-center justify-center gap-2 shadow-xl cursor-pointer transition"
+          >
+            <XOctagon className="w-5 h-5 stroke-[2.5]" />
+            <span>STOP / DISMISS ALARM</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              dismissBuyTicketAlarm();
+              setActiveModal(null);
+              navigateTo('/admin/live-payments');
+            }}
+            className="w-full min-h-[48px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.98] text-black font-black text-sm rounded-2xl flex items-center justify-center gap-2 cursor-pointer transition"
+          >
+            <span>Open Payment Approval</span>
+            <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+          </button>
+        </div>
       </div>
     </div>
   );

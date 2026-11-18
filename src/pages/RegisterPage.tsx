@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
+import { sendFirebaseVerificationLink } from '../utils/emailVerificationService';
 import { auth, db } from '../firebase';
 import { doc, setDoc } from 'firebase/firestore';
 
@@ -179,6 +180,11 @@ export const RegisterPage: React.FC = () => {
         await updateProfile(user, { displayName: cleanName });
       } catch (e) {}
 
+      // Automatically send Firebase email verification link for email/password signups
+      if (!user.emailVerified) {
+        await sendFirebaseVerificationLink(user);
+      }
+
       const uid = user.uid;
       const targetStoreObj = stores.find((s) => s.id === assignedStoreId);
       const isCustomer = selectedRole === 'Customer';
@@ -197,7 +203,7 @@ export const RegisterPage: React.FC = () => {
         createdAt: new Date().toISOString(),
         walletBalance: 0,
         isRegistered: true,
-        emailVerified: true,
+        emailVerified: Boolean(user.emailVerified),
         // Role specific metadata
         ...(selectedRole === 'Shop Worker' && {
           assignedStoreId: assignedStoreId,

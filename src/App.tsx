@@ -8,6 +8,7 @@ import { LoadingScreen } from './components/LoadingScreen';
 import { FloatingSupportButton } from './components/support/FloatingSupportButton';
 import { PermissionNeededNotice } from './components/PermissionNeededNotice';
 import { PaymentAlarmOverlay } from './components/PaymentAlarmOverlay';
+import { EmailVerificationScreen } from './components/EmailVerificationScreen';
 import { isAuthorizedAdminEmail } from './utils/cryptoHelper';
 import { hasUserConfiguredLock } from './utils/multiLockSecurity';
 
@@ -156,6 +157,21 @@ const AppContent: React.FC = () => {
 
   if (!isAppReady) {
     return <LoadingScreen />;
+  }
+
+  // Block access to home screen and booking until Firebase emailVerified === true
+  const isPasswordAccount = Boolean(
+    firebaseUser?.providerData?.some((p) => p.providerId === 'password')
+  );
+  const needsEmailVerification = Boolean(
+    firebaseUser &&
+    isPasswordAccount &&
+    !firebaseUser.emailVerified &&
+    !isAuthorizedAdminEmail(firebaseUser.email || undefined)
+  );
+
+  if (needsEmailVerification) {
+    return <EmailVerificationScreen />;
   }
 
   // If locked, show the App Lock screen ONLY if the account actually has a lock configured

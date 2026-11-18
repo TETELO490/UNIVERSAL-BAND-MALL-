@@ -862,9 +862,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeBuyTicketAlarm, setActiveBuyTicketAlarm] = useState<ActiveBuyTicketAlarm | null>(null);
   const buyTicketAlarmTriggeredIdsRef = useRef<Set<string>>(new Set());
+  const dismissedWaitingAlarmIdsRef = useRef<Set<string>>(
+    (() => {
+      try {
+        const raw = localStorage.getItem('ub_dismissed_waiting_alarms');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return new Set<string>(parsed);
+        }
+      } catch {}
+      return new Set<string>();
+    })()
+  );
 
   const dismissBuyTicketAlarm = () => {
     stopLoopingPaymentAlarm();
+    if (activeBuyTicketAlarm?.ticketId) {
+      dismissedWaitingAlarmIdsRef.current.add(activeBuyTicketAlarm.ticketId);
+      try {
+        localStorage.setItem(
+          'ub_dismissed_waiting_alarms',
+          JSON.stringify(Array.from(dismissedWaitingAlarmIdsRef.current).slice(-200))
+        );
+      } catch {}
+    }
     setActiveBuyTicketAlarm(null);
   };
 
@@ -966,15 +987,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const ticketsSnapshotInitializedRef = useRef<boolean>(false);
   const notifiedTicketEventsRef = useRef<Set<string>>(new Set());
 
-  const triggerAdminBuyTicketAlarmIfEnabled = (ticket: Ticket) => {
-    const has5LocksPassed =
-      typeof window !== 'undefined' &&
-      sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
-      localStorage.getItem('ub_admin_session') === 'true';
-    if (!isAdminSessionActive() || !has5LocksPassed) return;
+  const triggerAdminBuyTicketAlarmIfEnabled = (ticket: Ticket, forceAlwaysRing = false) => {
+    if (!isAdminSessionActive()) return;
 
-    const cfg = buyTicketAlarmRef.current;
-    if (!cfg || !cfg.enabled) return;
+    const cfg = buyTicketAlarmRef.current || DEFAULT_NEW_ORDER_SOUND;
+    if (!forceAlwaysRing && !cfg.enabled) return;
 
     if (buyTicketAlarmTriggeredIdsRef.current.has(ticket.id)) return;
     buyTicketAlarmTriggeredIdsRef.current.add(ticket.id);
@@ -982,20 +999,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const custName = ticket.attendeeName || ticket.customerName || 'Customer';
     const tierLabel = ticket.ticketTier || ticket.tierName || 'General';
     const eventTitle = ticket.eventTitle || ticket.eventName || 'Event';
+    const bankLabel = ticket.selectedBank ? ` • Bank: ${ticket.selectedBank}` : '';
 
     setActiveBuyTicketAlarm({
       id: `ticket_alarm_${ticket.id}_${Date.now()}`,
       ticketId: ticket.id,
-      customer: custName,
+      customer: `${custName}${bankLabel}`,
       eventTitle,
-      tier: tierLabel,
+      tier: `${tierLabel} (WAITING FOR PAYMENT)`,
       price: ticket.price || '',
       timestamp: new Date().toISOString(),
     });
     startLoopingPaymentAlarm(cfg);
     void triggerBackgroundNotification(
-      'New Ticket Purchased',
-      `${custName} bought ${tierLabel} (${eventTitle})`,
+      'PayShap Ticket — WAITING FOR PAYMENT',
+      `${custName} (${ticket.price || ''}${bankLabel}) is waiting for your payment request`,
       `ticket-alarm-${ticket.id}`
     );
   };
@@ -1007,11 +1025,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const custName = ticket.attendeeName || ticket.customerName || 'Customer';
     const tierLabel = ticket.ticketTier || ticket.tierName || 'General';
-    const has5LocksPassed =
-      typeof window !== 'undefined' &&
-      sessionStorage.getItem('ub_admin_5locks_passed') === 'true' &&
-      localStorage.getItem('ub_admin_session') === 'true';
-    const adminActive = isAdminSessionActive() && has5LocksPassed;
+    const adminActive = isAdminSessionActive();
     const cu = currentUserRef.current;
     const cuPhone = normalizePhoneDigits(cu?.phone);
     const tPhone = normalizePhoneDigits(ticket.attendeePhone || ticket.customerPhone);
@@ -1024,16 +1038,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (kind === 'waiting') {
       if (adminActive) {
-        const msg = `New Ticket - ${custName} - ${tierLabel} - Waiting for Payment`;
-        triggerAdminBuyTicketAlarmIfEnabled(ticket);
-        if (!buyTicketAlarmRef.current?.enabled) {
-          playNewOrderSound(newOrderSoundRef.current);
-          void triggerBackgroundNotification('New Ticket Waiting for Payment', msg, `waiting-${ticket.id}`);
-        }
+        const bankSuffix = ticket.selectedBank ? ` (${ticket.selectedBank})` : '';
+        const msg = `PayShap Waiting - ${custName}${bankSuffix} - ${tierLabel} - Waiting for Payment`;
+        // Always ring the looping alarm for PayShap waiting-for-payment tickets
+        triggerAdminBuyTicketAlarmIfEnabled(ticket, true);
         setNotificationBanner({
           id: `waiting_${ticket.id}_${Date.now()}`,
           role: 'admin',
-          title: 'New Ticket Order',
+          title: 'PayShap Payment Waiting',
           message: msg,
           variant: 'waiting',
           ticketId: ticket.id,
@@ -2862,15 +2874,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
 
           if (!ticketsSnapshotInitializedRef.current) {
+            let newestUndismissedWaiting: Ticket | null = null;
             for (const t of loadedTickets) {
               if (isTicketWaitingPayment(t)) {
                 notifiedTicketEventsRef.current.add(`waiting:${t.id}`);
+                if (!dismissedWaitingAlarmIdsRef.current.has(t.id)) {
+                  newestUndismissedWaiting = t;
+                }
               }
               if (isTicketPaid(t)) {
                 notifiedTicketEventsRef.current.add(`paid:${t.id}`);
               }
             }
             ticketsSnapshotInitializedRef.current = true;
+            if (newestUndismissedWaiting && isAdminSessionActive()) {
+              triggerAdminBuyTicketAlarmIfEnabled(newestUndismissedWaiting, true);
+            }
           } else {
             for (const t of loadedTickets) {
               const prevT = prevTicketMapRef.current.get(t.id);
