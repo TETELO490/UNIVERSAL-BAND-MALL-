@@ -1201,9 +1201,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         (snap) => {
           if (snap.exists()) {
             const data = snap.data() as any;
-            const remoteBase = typeof data?.baseUrl === 'string' ? normalizeBaseUrl(data.baseUrl) : '';
+            const remoteBase = typeof data?.baseUrl === 'string' && data.baseUrl.trim() ? normalizeBaseUrl(data.baseUrl) : 'https://Universalbandmallt.co.za';
             setAppBaseUrl(remoteBase);
             setConfiguredBaseUrl(remoteBase);
+          } else {
+            const defaultBase = 'https://Universalbandmallt.co.za';
+            setAppBaseUrl(defaultBase);
+            setConfiguredBaseUrl(defaultBase);
+            void setDoc(doc(db, 'app_settings', 'config'), { baseUrl: defaultBase, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
           }
         },
         () => {}
@@ -3909,6 +3914,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const adminApproveTicketPayment = async (
     ticketId: string
   ): Promise<{ success: boolean; error?: string }> => {
+    if (!isUserVerifiedAdminSession(currentUserRef.current)) {
+      return { success: false, error: 'Unauthorized: Only an admin can manually approve ticket payments.' };
+    }
+
     const targetTicket = ticketsRef.current.find((t) => t.id === ticketId || t.ticketId === ticketId);
     if (!targetTicket) {
       return { success: false, error: 'Ticket not found' };

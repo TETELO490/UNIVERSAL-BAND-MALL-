@@ -110,12 +110,7 @@ export const TicketDetailModal: React.FC = () => {
     selectedTicket.payshapReference ||
     getEventPayshapReference(selectedTicket.eventTitle || selectedTicket.eventName);
 
-  const canAdminApprove =
-    isVerifiedAdmin ||
-    canOrganizerInspect ||
-    currentUser.role === 'admin' ||
-    currentUser.role === 'promoter' ||
-    currentUser.email === 'tetelophokwane98@gmail.com';
+  const canAdminApprove = isVerifiedAdmin;
 
   const handleCopyPayshapRef = () => {
     if (!resolvedPayshapRef) return;

@@ -8,10 +8,11 @@ const BASE_URL_STORAGE_KEY = 'ub_app_base_url';
 let configuredBaseUrl = (() => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      return (window.localStorage.getItem(BASE_URL_STORAGE_KEY) || '').trim().replace(/\/+$/, '');
+      const stored = window.localStorage.getItem(BASE_URL_STORAGE_KEY);
+      if (stored !== null) return stored.trim().replace(/\/+$/, '');
     }
   } catch {}
-  return '';
+  return 'https://Universalbandmallt.co.za';
 })();
 
 export function normalizeBaseUrl(raw: string): string {

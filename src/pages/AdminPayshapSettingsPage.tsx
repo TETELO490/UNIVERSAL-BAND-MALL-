@@ -316,6 +316,25 @@ export const AdminPayshapSettingsPage: React.FC = () => {
         </button>
       </form>
 
+      {/* Domain Redirect Setup Guide */}
+      <div className="bg-[#141414] border border-emerald-500/30 rounded-2xl p-4 space-y-2.5">
+        <div className="flex items-center gap-2 text-emerald-400">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span className="text-xs font-black uppercase tracking-wider">
+            How Your Bought Domain Redirects to Google AI Studio
+          </span>
+        </div>
+        <p className="text-[11px] text-gray-300 leading-relaxed">
+          1. Your saved domain (<span className="font-mono text-[#FACC15]">{appBaseUrl || 'https://www.my-domain.co.za'}</span>) is now embedded at the start of all event QR codes (<span className="font-mono text-white">{`${appBaseUrl || 'https://www.my-domain.co.za'}/event/soweto-fest`}</span>).
+        </p>
+        <p className="text-[11px] text-gray-300 leading-relaxed">
+          2. To make visitors on your domain redirect to Google AI Studio (<span className="font-mono text-cyan-300">{window.location.origin}</span>), set up a 301 Redirect or CNAME on your domain host (Cloudflare, Cpanel, Vercel) pointing <span className="font-mono text-white">my-domain.co.za</span> to <span className="font-mono text-cyan-300">{window.location.origin}</span>, or paste this meta redirect on your domain index:
+        </p>
+        <div className="bg-black/80 border border-white/15 rounded-xl p-2.5 font-mono text-[10px] text-emerald-300 select-all overflow-x-auto">
+          {`<meta http-equiv="refresh" content="0; url=${window.location.origin}">`}
+        </div>
+      </div>
+
       {/* Current Active PayShap ID */}
       <div className="bg-[#1A1A1A] border border-[#FACC15]/30 rounded-2xl p-4">
         <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 block">
