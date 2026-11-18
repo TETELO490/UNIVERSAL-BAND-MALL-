@@ -46,13 +46,6 @@ export const doesSmsMatchBankMessage = (
   bankMessage: string = 'TymeBank'
 ): string | null => {
   const haystack = `${sender || ''} ${smsText || ''}`.toLowerCase();
-  if (
-    haystack.includes('payfast') ||
-    haystack.includes('pay fast') ||
-    haystack.includes('pf-')
-  ) {
-    return 'PayFast';
-  }
   const terms = splitBankMessageTerms(bankMessage);
   if (terms.length === 0) return null;
   for (const term of terms) {
@@ -81,14 +74,14 @@ export interface PaymentAlertSmsDetails {
   numericAmount: number;
   senderName: string;
   reference?: string;
-  gateway?: 'PayFast' | 'TymeBank' | 'Generic';
+  gateway?: 'TymeBank' | 'Generic';
   rawText: string;
 }
 
 /**
- * Checks if SMS is from GoTyme Bank / TymeBank OR PayFast payment confirmation.
+ * Checks if SMS is from GoTyme Bank / TymeBank payment confirmation.
  * Triggers for ANY amount (R1, R5, R50, R100, R1000, etc.).
- * Extracts amount, sender/customer, and reference (including PayFast PF-... codes).
+ * Extracts amount, sender/customer, and reference.
  */
 export const checkIsTymeBankPaymentAlertSms = (
   smsText: string,
@@ -103,11 +96,6 @@ export const checkIsTymeBankPaymentAlertSms = (
     lowerHaystack.includes('tyme bank') ||
     lowerHaystack.includes('tyme');
 
-  const isPayFast =
-    lowerHaystack.includes('payfast') ||
-    lowerHaystack.includes('pay fast') ||
-    lowerHaystack.includes('pf-');
-
   const hasReceived =
     lowerHaystack.includes('you received') ||
     lowerHaystack.includes('payment received') ||
@@ -121,7 +109,7 @@ export const checkIsTymeBankPaymentAlertSms = (
     lowerHaystack.includes('by') ||
     lowerHaystack.includes('for');
 
-  if ((!isTymeBank && !isPayFast) || (!hasReceived && !hasFrom)) {
+  if (!isTymeBank || (!hasReceived && !hasFrom)) {
     return {
       isPayment: false,
       amount: '',
@@ -145,15 +133,10 @@ export const checkIsTymeBankPaymentAlertSms = (
   const senderMatch =
     text.match(/\bfrom\s+([^.]+?)(?=\s*(?:\.|\bYour available\b|\bYour balance\b|\bRef\b|\bReference\b|\bAvailable\b|$))/i) ||
     text.match(/\bby\s+([^.]+?)(?=\s*(?:\.|\bRef\b|\bReference\b|$))/i);
-  const senderName = senderMatch
-    ? senderMatch[1].trim()
-    : isPayFast
-    ? 'PayFast Customer'
-    : 'Customer';
+  const senderName = senderMatch ? senderMatch[1].trim() : 'Customer';
 
-  // Extract reference: PF-... or UB-... or Ref: ...
+  // Extract reference: UB-... or Ref: ...
   const refMatch =
-    text.match(/\b(PF-[A-Za-z0-9_-]+)/i) ||
     text.match(/\b(UB-[A-Za-z0-9_-]+)/i) ||
     text.match(/(?:Reference|Ref)[:\s]+([^\r\n.]+)/i);
   const reference = refMatch ? refMatch[1].trim() : '';
@@ -164,7 +147,7 @@ export const checkIsTymeBankPaymentAlertSms = (
     numericAmount,
     senderName,
     reference,
-    gateway: isPayFast ? 'PayFast' : 'TymeBank',
+    gateway: 'TymeBank',
     rawText: text,
   };
 };
@@ -364,16 +347,6 @@ export const getEventPayshapReference = (eventTitle?: string | null): string => 
   return cleanTitle ? `Universal Band - ${cleanTitle}` : 'Universal Band - Event';
 };
 
-export const getEventPayfastReference = (eventTitle?: string | null): string => {
-  const cleanTitle = String(eventTitle || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9]/g, '')
-    .slice(0, 8)
-    .toUpperCase();
-  const randomSix = Math.floor(100000 + Math.random() * 900000);
-  return cleanTitle ? `PF-${cleanTitle}-${randomSix}` : `PF-UB-${randomSix}`;
-};
-
 export const extractEventNameFromPayshapRef = (reference?: string | null): string | null => {
   const clean = String(reference || '').trim();
   const match = clean.match(/^universal\s+band\s*-\s*(.+)$/i);
@@ -412,17 +385,13 @@ export const findMatchingWaitingTicket = (
   const refDigits = details.reference.replace(/\D/g, '');
   const refEventTitle = extractEventNameFromPayshapRef(details.reference);
 
-  // Priority 1: Exact payfastReference or payshapReference match + amount matches ticket total
+  // Priority 1: Exact payshapReference match + amount matches ticket total
   const exactRefMatches = waitingTickets.filter((t) => {
     const ticketAmount = parsePriceNumber(t.price);
     const amountMatches =
       ticketAmount <= 0 || Math.abs(ticketAmount - details.paidAmount) < 1;
-    const pfRef = t.payfastReference?.trim().toLowerCase();
     const psRef = t.payshapReference?.trim().toLowerCase();
-    const matchesRef = Boolean(
-      (pfRef && (pfRef === refLower || refLower.includes(pfRef) || pfRef.includes(refLower))) ||
-      (psRef && (psRef === refLower || refLower.includes(psRef)))
-    );
+    const matchesRef = Boolean(psRef && (psRef === refLower || refLower.includes(psRef)));
     return amountMatches && matchesRef;
   });
   if (exactRefMatches.length === 1) {

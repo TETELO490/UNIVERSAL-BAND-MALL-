@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { formatEventDate, isEventExpired } from '../../utils/dateHelper';
 import { getEventTicketStats } from '../../utils/eventTicketLimit';
-import { getEventPayshapReference, getEventPayfastReference, isTopUpPayshapReference } from '../../utils/ticketStatus';
+import { getEventPayshapReference, isTopUpPayshapReference } from '../../utils/ticketStatus';
 import {
   X,
   CreditCard,
@@ -21,7 +21,6 @@ import {
   Contact,
   Pencil,
   RotateCcw,
-  Zap,
 } from 'lucide-react';
 import { pickRealContact } from '../../utils/nativePermissions';
 
@@ -34,15 +33,14 @@ export const BuyTicketModal: React.FC = () => {
     currentUser,
     buyTicket,
     buyTicketWithPayShap,
-    buyTicketWithPayFast,
     tymebankPayshapNumber,
+    supportedBanks,
     setSelectedTicket,
     setActiveModal,
   } = useApp();
 
-  const [paymentMode, setPaymentMode] = useState<'payfast' | 'payshap' | 'wallet'>('payfast');
-  const [payfastRef, setPayfastRef] = useState<string>('');
-  const [copiedPayfastRef, setCopiedPayfastRef] = useState<boolean>(false);
+  const [paymentMode, setPaymentMode] = useState<'payshap' | 'wallet'>('payshap');
+  const [selectedBank, setSelectedBank] = useState<string>('');
   const [fullName, setFullName] = useState<string>(currentUser.fullName || currentUser.name || '');
   const [phone, setPhone] = useState<string>(currentUser.phone || '');
   const [quantity, setQuantity] = useState<number>(1);
@@ -87,7 +85,6 @@ export const BuyTicketModal: React.FC = () => {
     if (liveEvent?.title) {
       setIsManualRefEditing(false);
       setManualPayshapRef(getEventPayshapReference(liveEvent.title));
-      setPayfastRef(getEventPayfastReference(liveEvent.title));
     }
   }, [liveEvent?.id, liveEvent?.title]);
 
@@ -126,13 +123,6 @@ export const BuyTicketModal: React.FC = () => {
     navigator.clipboard?.writeText(activePayshapReference);
     setCopiedRef(true);
     setTimeout(() => setCopiedRef(false), 2500);
-  };
-
-  const copyPayfastRef = () => {
-    if (!payfastRef) return;
-    navigator.clipboard?.writeText(payfastRef);
-    setCopiedPayfastRef(true);
-    setTimeout(() => setCopiedPayfastRef(false), 2500);
   };
 
   const copyPayshapNumber = () => {
@@ -184,33 +174,18 @@ export const BuyTicketModal: React.FC = () => {
     setLoading(true);
     setError(null);
 
-    if (paymentMode === 'payfast') {
-      const activePfRef = payfastRef || getEventPayfastReference(liveEvent.title);
-      const res = await buyTicketWithPayFast(liveEvent, {
-        fullName: fullName.trim(),
-        phone: phone.trim(),
-        quantity,
-        ticketTier: selectedTierObj.name,
-        tierPrice: selectedTierObj.formattedPrice,
-        payfastReference: activePfRef,
-      });
-
-      setLoading(false);
-
-      if (res.success && res.ticket) {
-        setSelectedBuyingEvent(null);
-        setSelectedTicket(res.ticket);
-        setActiveModal('ticket-detail');
-      } else if (res.error) {
-        setError(res.error);
-      }
-    } else if (paymentMode === 'payshap') {
+    if (paymentMode === 'payshap') {
       if (isTopUpPayshapReference(activePayshapReference)) {
         setLoading(false);
         setError(`Event payment reference cannot be the Top Up reference. Use "${autoPayshapReference}".`);
         return;
       }
-      // PayShap TymeBank flow
+      if (!selectedBank.trim()) {
+        setLoading(false);
+        setError('Please select which bank or account you will use to approve the payment request.');
+        return;
+      }
+      // PayShap Payment Request flow
       const res = await buyTicketWithPayShap(liveEvent, {
         fullName: fullName.trim(),
         phone: phone.trim(),
@@ -218,6 +193,7 @@ export const BuyTicketModal: React.FC = () => {
         ticketTier: selectedTierObj.name,
         tierPrice: selectedTierObj.formattedPrice,
         payshapReference: activePayshapReference,
+        selectedBank: selectedBank.trim(),
       });
 
       setLoading(false);
@@ -330,177 +306,83 @@ export const BuyTicketModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Payment Method Selector: PayFast vs PayShap vs Wallet */}
-        <div className="grid grid-cols-3 gap-1 p-1 bg-black/60 rounded-xl border border-white/10 mb-3 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setPaymentMode('payfast')}
-            className={`py-2 px-1 rounded-lg font-bold flex flex-col items-center justify-center gap-1 transition cursor-pointer ${
-              paymentMode === 'payfast'
-                ? 'bg-[#FACC15] text-black font-black shadow-sm'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span className="truncate">PayFast</span>
-          </button>
+        {/* Payment Method Selector: PayShap vs Wallet */}
+        <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/60 rounded-xl border border-white/10 mb-3 text-xs">
           <button
             type="button"
             onClick={() => setPaymentMode('payshap')}
-            className={`py-2 px-1 rounded-lg font-bold flex flex-col items-center justify-center gap-1 transition cursor-pointer ${
+            className={`py-2 px-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
               paymentMode === 'payshap'
                 ? 'bg-[#FACC15] text-black font-black shadow-sm'
                 : 'text-gray-400 hover:text-white'
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
-            <span className="truncate">PayShap</span>
+            <span>PayShap Request</span>
           </button>
           <button
             type="button"
             onClick={() => setPaymentMode('wallet')}
-            className={`py-2 px-1 rounded-lg font-bold flex flex-col items-center justify-center gap-1 transition cursor-pointer ${
+            className={`py-2 px-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
               paymentMode === 'wallet'
                 ? 'bg-[#FACC15] text-black font-black shadow-sm'
                 : 'text-gray-400 hover:text-white'
             }`}
           >
             <Banknote className="w-3.5 h-3.5" />
-            <span className="truncate">NFC Wallet</span>
+            <span>NFC Wallet</span>
           </button>
         </div>
 
-        {/* PAYFAST INSTRUCTIONS BOX */}
-        {paymentMode === 'payfast' && (
-          <div className="bg-[#121212] border border-[#FACC15]/40 rounded-xl p-3 mb-4 space-y-2.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-[#FACC15] font-black uppercase text-[10px] flex items-center gap-1">
-                <Zap className="w-3 h-3 text-[#FACC15]" /> PayFast Instant Gateway
-              </span>
-              <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> Auto-Message Detected
-              </span>
-            </div>
-
-            {/* PayFast Reference */}
-            <div className="bg-black/60 p-2.5 rounded-lg border border-[#FACC15]/30 space-y-1">
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[9px] text-gray-400 font-semibold">PayFast Payment Reference</span>
-                <button
-                  type="button"
-                  onClick={copyPayfastRef}
-                  className="text-[10px] bg-[#FACC15] text-black font-black px-2 py-0.5 rounded transition flex items-center gap-1 cursor-pointer"
-                >
-                  {copiedPayfastRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedPayfastRef ? 'Copied' : 'Copy Ref'}</span>
-                </button>
-              </div>
-              <div className="font-mono font-black text-sm text-[#FACC15] tracking-wide break-all">
-                {payfastRef}
-              </div>
-            </div>
-
-            {/* Accepted Methods */}
-            <div className="bg-white/5 p-2 rounded-lg text-[10px] text-gray-300 flex items-center justify-between">
-              <span>Methods accepted:</span>
-              <span className="font-semibold text-white">Cards • Instant EFT • Zapper • SnapScan</span>
-            </div>
-
-            <p className="text-[10px] text-gray-400 leading-tight">
-              Tapping Buy Ticket creates your ticket with status <strong className="text-amber-300">Awaiting for payment</strong>. The app searches for the payment confirmation message on its own to auto-approve. The administrator also has access to manually approve the ticket as a backup.
-            </p>
-          </div>
-        )}
-
-        {/* PAYSHAP INSTRUCTIONS BOX (When PayShap is selected) */}
+        {/* PAYSHAP PAYMENT REQUEST BOX (When PayShap is selected) */}
         {paymentMode === 'payshap' && (
           <div className="bg-[#121212] border border-[#FACC15]/40 rounded-xl p-3 mb-4 space-y-2.5">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-[#FACC15] font-black uppercase text-[10px]">TymeBank PayShap Details</span>
+              <span className="text-[#FACC15] font-black uppercase text-[10px]">PayShap Payment Request</span>
               <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> Auto-SMS Confirmed
+                <CheckCircle2 className="w-3 h-3" /> Approve in Your Bank App
               </span>
             </div>
 
-            {/* PayShap Cell / ID */}
-            <div className="bg-black/60 p-2 rounded-lg border border-white/10 flex items-center justify-between">
-              <div>
-                <span className="text-[9px] text-gray-400 block font-semibold">TymeBank PayShap ID</span>
-                <span className="font-mono font-bold text-white text-xs">{tymebankPayshapNumber}</span>
-              </div>
-              <button
-                type="button"
-                onClick={copyPayshapNumber}
-                className="text-[10px] bg-white/10 hover:bg-white/20 text-gray-300 px-2 py-1 rounded transition flex items-center gap-1 cursor-pointer"
+            {/* Customer Bank / Account Selector */}
+            <div className="bg-black/60 p-2.5 rounded-lg border border-[#FACC15]/30 space-y-1.5">
+              <label
+                htmlFor="buy-ticket-bank-select"
+                className="text-[10px] text-gray-300 font-bold block"
               >
-                {copiedPhone ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                <span>{copiedPhone ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-
-            {/* Auto-generated PayShap Reference ("Universal Band - [Event Name]") */}
-            <div className="bg-black/60 p-2 rounded-lg border border-[#FACC15]/30 space-y-1.5">
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[9px] text-gray-400 font-semibold">PayShap Payment Reference</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isManualRefEditing) {
-                        setIsManualRefEditing(false);
-                        setManualPayshapRef(autoPayshapReference);
-                      } else {
-                        setManualPayshapRef(activePayshapReference);
-                        setIsManualRefEditing(true);
-                      }
-                    }}
-                    className="text-[10px] bg-white/10 hover:bg-white/20 text-gray-200 font-bold px-2 py-0.5 rounded transition flex items-center gap-1 cursor-pointer"
-                    title={isManualRefEditing ? 'Reset to automatic event reference' : 'Edit reference manually as backup'}
-                  >
-                    {isManualRefEditing ? (
-                      <>
-                        <RotateCcw className="w-2.5 h-2.5 text-[#FACC15]" />
-                        <span>Auto</span>
-                      </>
-                    ) : (
-                      <>
-                        <Pencil className="w-2.5 h-2.5 text-[#FACC15]" />
-                        <span>Edit</span>
-                      </>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={copyPayshapRef}
-                    className="text-[10px] bg-[#FACC15] text-black font-black px-2 py-0.5 rounded transition flex items-center gap-1 cursor-pointer"
-                  >
-                    {copiedRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedRef ? 'Copied' : 'Copy Ref'}</span>
-                  </button>
-                </div>
-              </div>
-              {isManualRefEditing ? (
-                <div className="space-y-1">
-                  <input
-                    type="text"
-                    value={manualPayshapRef}
-                    onChange={(e) => setManualPayshapRef(e.target.value)}
-                    placeholder={autoPayshapReference}
-                    className="w-full bg-[#121212] border border-[#FACC15]/60 focus:border-[#FACC15] rounded-lg px-2.5 py-1.5 text-xs font-mono font-black text-[#FACC15] focus:outline-none"
-                  />
-                  <p className="text-[9px] text-gray-400">
-                    Manual backup active — tap &quot;Auto&quot; to restore <span className="text-[#FACC15] font-mono">{autoPayshapReference}</span>.
-                  </p>
-                </div>
-              ) : (
-                <div className="font-mono font-black text-sm text-[#FACC15] tracking-wide break-all">
-                  {activePayshapReference}
-                </div>
+                Choose Your Bank / Account to Approve Payment
+              </label>
+              <select
+                id="buy-ticket-bank-select"
+                value={selectedBank}
+                onChange={(e) => {
+                  setSelectedBank(e.target.value);
+                  if (error) setError(null);
+                }}
+                className={`w-full min-h-[40px] bg-[#121212] border rounded-lg px-2.5 py-2 text-xs font-bold focus:outline-none cursor-pointer ${
+                  selectedBank
+                    ? 'border-emerald-500/60 text-white focus:border-[#FACC15]'
+                    : 'border-amber-500/60 text-amber-200 focus:border-[#FACC15]'
+                }`}
+              >
+                <option value="" disabled>
+                  -- Choose your bank / account --
+                </option>
+                {supportedBanks.map((bank) => (
+                  <option key={bank} value={bank}>
+                    {bank}
+                  </option>
+                ))}
+              </select>
+              {!selectedBank && (
+                <p className="text-[10px] text-amber-300 font-semibold">
+                  You must choose your bank above before you can buy a ticket.
+                </p>
               )}
             </div>
 
-            <p className="text-[10px] text-gray-400 leading-tight">
-              Tapping Buy Ticket creates your pass as <strong className="text-amber-300">WAITING FOR PAYMENT</strong> and alerts the organizer. Approve the PayShap Request or pay via PayShap from <strong>ANY bank app</strong> — TymeBank SMS confirms it as <strong className="text-emerald-400">PAID ✅</strong> automatically!
+            <p className="text-[10px] text-gray-300 leading-snug">
+              Tapping Buy Ticket creates your pass as <strong className="text-amber-300">WAITING FOR PAYMENT</strong>. Wait for a payment request from us, then open your <strong className="text-[#FACC15]">{selectedBank || 'banking'}</strong> app and approve it. Once approved, your ticket is marked <strong className="text-emerald-400">PAID ✅</strong>.
             </p>
           </div>
         )}
@@ -579,21 +461,26 @@ export const BuyTicketModal: React.FC = () => {
           <div className="pt-2">
             <button
               type="submit"
-              disabled={loading || (paymentMode === 'wallet' && balanceAfter < 0) || purchaseBlocked}
-              className={`w-full font-extrabold py-3.5 rounded-xl transition flex items-center justify-center gap-2 text-xs cursor-pointer ${
+              disabled={
+                loading ||
+                (paymentMode === 'payshap' && !selectedBank.trim()) ||
+                (paymentMode === 'wallet' && balanceAfter < 0) ||
                 purchaseBlocked
+              }
+              className={`w-full font-extrabold py-3.5 rounded-xl transition flex items-center justify-center gap-2 text-xs ${
+                purchaseBlocked || (paymentMode === 'payshap' && !selectedBank.trim())
                   ? 'bg-zinc-800 text-gray-500 border border-zinc-700 cursor-not-allowed opacity-60'
-                  : 'bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black shadow-lg shadow-yellow-400/20 disabled:opacity-50'
+                  : 'bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black shadow-lg shadow-yellow-400/20 disabled:opacity-50 cursor-pointer'
               }`}
             >
               <CreditCard className="w-4 h-4 stroke-[2.5]" />
               <span>
                 {loading
                   ? 'Creating Ticket...'
-                  : paymentMode === 'payfast'
-                  ? `Buy Ticket with PayFast • R${totalCost.toFixed(2)}`
+                  : paymentMode === 'payshap' && !selectedBank.trim()
+                  ? 'Choose a Bank to Buy Ticket'
                   : paymentMode === 'payshap'
-                  ? `Buy Ticket with PayShap • R${totalCost.toFixed(2)}`
+                  ? `Buy Ticket • R${totalCost.toFixed(2)}`
                   : `Confirm & Pay R${totalCost.toFixed(2)} with Wallet`}
               </span>
             </button>
@@ -602,7 +489,7 @@ export const BuyTicketModal: React.FC = () => {
 
         <div className="mt-3 text-center flex items-center justify-center gap-1.5 text-[10px] text-gray-400">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          <span>PayFast &amp; PayShap payments auto-checked with Admin backup approval</span>
+          <span>PayShap payments auto-checked with Admin backup approval</span>
         </div>
       </div>
     </div>

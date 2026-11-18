@@ -154,11 +154,11 @@ export interface Ticket {
   createdAt: string;
   quantity?: number;
   paymentStatus?: 'PENDING_PAYMENT' | 'WAITING FOR PAYMENT' | 'PAID' | 'VERIFIED';
-  paymentMethod?: 'PayFast' | 'PayShap' | 'Wallet' | string;
+  paymentMethod?: 'PayShap' | 'Wallet' | string;
+  selectedBank?: string;
   payshapReference?: string;
   payshapRequestSent?: boolean;
   payshapRequestSentAt?: string;
-  payfastReference?: string;
   approvedBy?: string;
   approvedAt?: string;
   paidAt?: string;
@@ -586,7 +586,6 @@ export interface SupportTicketAttachment {
   ticketTier?: string;
   price: string;
   payshapReference?: string;
-  payfastReference?: string;
   paymentMethod?: string;
   purchaseDate?: string;
   customerName: string;

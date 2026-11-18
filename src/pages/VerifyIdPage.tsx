@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { db, storage } from '../firebase';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { compressImageForUpload, fileToBase64 } from '../utils/imageUploadHelper';
 import { calculateAgeFromSAID } from '../utils/ageHelper';
 import { DatePickerInput } from '../components/DatePickerInput';
 import { ensureCameraPermission, ensurePhotosPermission } from '../utils/nativePermissions';
@@ -99,28 +100,28 @@ export const VerifyIdPage: React.FC = () => {
     }
   };
 
-  // Helper to convert file to storage URL or base64 data URL
+  // Helper to compress and upload image to Firebase Storage (max 800px, JPG 70%, <= 200KB)
   const uploadImageFile = async (file: File | null, existingUrl: string | null, prefix: string): Promise<string> => {
     if (!file) {
       if (existingUrl) return existingUrl;
       throw new Error('Missing required verification image.');
     }
 
+    const compressedBlob = await compressImageForUpload(file);
+
     try {
-      // Upload to Firebase Storage path: verifications/{walletId}/{prefix}_{timestamp}
-      const storagePath = `verifications/${walletId}/${prefix}_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      // Upload compressed JPEG to Firebase Storage path: verifications/{walletId}/{prefix}_{timestamp}.jpg
+      const baseName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 32) || 'photo';
+      const storagePath = `verifications/${walletId}/${prefix}_${Date.now()}_${baseName}.jpg`;
       const fileRef = ref(storage, storagePath);
-      const uploadRes = await uploadBytes(fileRef, file);
+      const uploadRes = await uploadBytes(fileRef, compressedBlob, {
+        contentType: 'image/jpeg',
+      });
       const downloadUrl = await getDownloadURL(uploadRes.ref);
       return downloadUrl;
     } catch (err) {
-      console.warn('Firebase Storage upload fallback to data URL:', err);
-      // Convert local file directly to data URL
-      return new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(file);
-      });
+      console.warn('Firebase Storage upload fallback to compressed data URL:', err);
+      return fileToBase64(file);
     }
   };
 

@@ -134,6 +134,13 @@ export const SendPayshapRequestModal: React.FC<SendPayshapRequestModalProps> = (
             </span>
           </div>
 
+          {ticket.selectedBank && (
+            <div className="flex items-center justify-between gap-2 bg-[#FACC15]/10 rounded-xl p-2.5 border border-[#FACC15]/30">
+              <span className="text-[11px] font-bold text-[#FACC15]">Customer Bank:</span>
+              <span className="text-xs font-black text-white">{ticket.selectedBank}</span>
+            </div>
+          )}
+
           {/* Customer Phone Number */}
           <div className="flex items-center justify-between gap-2 bg-black/50 rounded-xl p-2.5 border border-white/10">
             <div className="flex items-center gap-2 min-w-0">

@@ -1991,6 +1991,13 @@ export const AdminConsoleModal: React.FC = () => {
                         <span className="truncate max-w-[150px]">{t.eventTitle}</span>
                       </div>
 
+                      {t.selectedBank && (
+                        <div className="bg-white/5 border border-[#FACC15]/30 rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[#FACC15] flex items-center justify-between">
+                          <span>Customer Bank:</span>
+                          <span className="text-white">{t.selectedBank}</span>
+                        </div>
+                      )}
+
                       {waiting && t.payshapRequestSent && (
                         <div className="bg-amber-500/15 border border-amber-400/40 rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-amber-200">
                           Request Sent - Waiting for customer to approve in their bank app

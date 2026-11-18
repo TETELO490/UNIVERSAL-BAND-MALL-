@@ -1,15 +1,19 @@
 /**
- * Helper to process and convert uploaded images (from mobile gallery, camera, or desktop)
- * to high-quality base64 Data URLs.
- * Optimizes dimensions to ensure Firestore document size limit (1MB) is respected.
+ * Helper to compress and resize all uploaded images (from mobile gallery, camera, or desktop)
+ * before uploading to Firebase Storage or storing as Data URLs.
+ * Enforces: max 800px width, JPG 70% quality, max 200KB per image.
  */
 
 export interface ProcessImageOptions {
   maxWidth?: number;
   maxHeight?: number;
-  quality?: number; // 0.1 to 1.0
-  maxBytes?: number; // target max UTF-8 character/byte length for Data URL (default 450KB)
+  quality?: number; // 0.1 to 1.0 (default 0.7)
+  maxBytes?: number; // target max byte size (default 200KB)
 }
+
+export const MAX_IMAGE_WIDTH = 800;
+export const DEFAULT_JPEG_QUALITY = 0.7;
+export const MAX_IMAGE_BYTES = 200 * 1024; // 200KB
 
 export function estimateDocByteSize(obj: unknown): number {
   try {
@@ -20,128 +24,145 @@ export function estimateDocByteSize(obj: unknown): number {
   }
 }
 
-export function fileToBase64(file: File, options?: ProcessImageOptions): Promise<string> {
-  const {
-    maxWidth = 1080,
-    maxHeight = 1080,
-    quality = 0.84,
-    maxBytes = 450 * 1024,
-  } = options || {};
-
+function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     if (!file) {
       reject(new Error('No file provided'));
       return;
     }
-
     if (!file.type.startsWith('image/')) {
       reject(new Error('Selected file is not an image'));
       return;
     }
 
-    const reader = new FileReader();
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
 
-    reader.onerror = () => {
-      reject(new Error('Failed to read image file'));
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
     };
 
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      if (!dataUrl) {
-        reject(new Error('Failed to parse file data'));
-        return;
-      }
-
-      const img = new Image();
-      img.onerror = () => {
-        if (dataUrl.length <= maxBytes) {
-          resolve(dataUrl);
-        } else {
-          reject(new Error('Image is too large and could not be compressed. Please choose a smaller photo.'));
-        }
-      };
-
-      img.onload = () => {
-        try {
-          let width = img.naturalWidth || img.width;
-          let height = img.naturalHeight || img.height;
-
-          // Only skip re-encoding if already small enough on both dimensions and byte budget
-          if (width <= maxWidth && height <= maxHeight && dataUrl.length <= maxBytes) {
-            resolve(dataUrl);
-            return;
-          }
-
-          if (width > maxWidth || height > maxHeight) {
-            const ratio = Math.min(maxWidth / width, maxHeight / height);
-            width = Math.max(1, Math.round(width * ratio));
-            height = Math.max(1, Math.round(height * ratio));
-          }
-
-          const renderToDataUrl = (w: number, h: number, mime: string, q: number): string => {
-            const canvas = document.createElement('canvas');
-            canvas.width = w;
-            canvas.height = h;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return dataUrl;
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'high';
-            // Paint white/dark base before JPEG draw if source has transparency
-            if (mime === 'image/jpeg') {
-              ctx.fillStyle = '#0B0B0B';
-              ctx.fillRect(0, 0, w, h);
-            }
-            ctx.drawImage(img, 0, 0, w, h);
-            return canvas.toDataURL(mime, q);
-          };
-
-          // Try PNG first only if source is PNG; otherwise use JPEG
-          let resultUrl =
-            file.type === 'image/png'
-              ? renderToDataUrl(width, height, 'image/png', quality)
-              : renderToDataUrl(width, height, 'image/jpeg', quality);
-
-          // Step down JPEG quality and dimensions until safely under maxBytes
-          const qualities = [quality, 0.72, 0.6, 0.48, 0.36];
-          for (const q of qualities) {
-            if (resultUrl.length <= maxBytes) break;
-            resultUrl = renderToDataUrl(width, height, 'image/jpeg', q);
-          }
-
-          let scale = 0.75;
-          while (resultUrl.length > maxBytes && scale >= 0.35) {
-            const scaledW = Math.max(160, Math.round(width * scale));
-            const scaledH = Math.max(160, Math.round(height * scale));
-            resultUrl = renderToDataUrl(scaledW, scaledH, 'image/jpeg', 0.55);
-            if (resultUrl.length > maxBytes) {
-              resultUrl = renderToDataUrl(scaledW, scaledH, 'image/jpeg', 0.38);
-            }
-            scale -= 0.15;
-          }
-
-          if (resultUrl.length > maxBytes) {
-            reject(
-              new Error(
-                'Poster image is still too large after compression. Please choose a smaller image or use an image URL.'
-              )
-            );
-            return;
-          }
-
-          resolve(resultUrl);
-        } catch (err) {
-          console.warn('Canvas optimization error:', err);
-          if (dataUrl.length <= maxBytes) {
-            resolve(dataUrl);
-          } else {
-            reject(new Error('Could not compress image for upload. Please try a smaller photo.'));
-          }
-        }
-      };
-
-      img.src = dataUrl;
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Failed to decode image file. Please choose a valid photo.'));
     };
 
-    reader.readAsDataURL(file);
+    img.src = objectUrl;
   });
+}
+
+function drawToCanvas(img: HTMLImageElement, width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas 2D context unavailable for image compression.');
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  // Paint solid background before JPEG draw so transparent PNGs don't turn black unexpectedly
+  ctx.fillStyle = '#0B0B0B';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+  return canvas;
+}
+
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('Failed to compress image to JPEG.'));
+        }
+      },
+      'image/jpeg',
+      quality
+    );
+  });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read compressed image data.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read compressed image data.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Compresses any image File to a JPEG Blob:
+ * - Resized to max 800px width (preserving aspect ratio)
+ * - Encoded as JPEG at 70% quality
+ * - Guaranteed <= 200KB (steps down quality/dimensions if needed)
+ * Never returns the original full-size photo.
+ */
+export async function compressImageForUpload(
+  file: File,
+  options?: ProcessImageOptions
+): Promise<Blob> {
+  const maxWidth = Math.min(options?.maxWidth ?? MAX_IMAGE_WIDTH, MAX_IMAGE_WIDTH);
+  const maxHeight = options?.maxHeight ?? MAX_IMAGE_WIDTH * 2;
+  const initialQuality = Math.min(options?.quality ?? DEFAULT_JPEG_QUALITY, DEFAULT_JPEG_QUALITY);
+  const maxBytes = Math.min(options?.maxBytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
+
+  const img = await loadImageFromFile(file);
+
+  let width = img.naturalWidth || img.width;
+  let height = img.naturalHeight || img.height;
+
+  if (width > maxWidth || height > maxHeight) {
+    const ratio = Math.min(maxWidth / width, maxHeight / height);
+    width = Math.max(1, Math.round(width * ratio));
+    height = Math.max(1, Math.round(height * ratio));
+  }
+
+  let canvas = drawToCanvas(img, width, height);
+  let blob = await canvasToJpegBlob(canvas, initialQuality);
+
+  // Step down JPEG quality if still above 200KB
+  const qualitySteps = [0.6, 0.5, 0.4, 0.3];
+  for (const q of qualitySteps) {
+    if (blob.size <= maxBytes) break;
+    if (q < initialQuality) {
+      blob = await canvasToJpegBlob(canvas, q);
+    }
+  }
+
+  // Step down dimensions if still above 200KB
+  let scale = 0.75;
+  while (blob.size > maxBytes && scale >= 0.3) {
+    const scaledW = Math.max(160, Math.round(width * scale));
+    const scaledH = Math.max(160, Math.round(height * scale));
+    canvas = drawToCanvas(img, scaledW, scaledH);
+    blob = await canvasToJpegBlob(canvas, 0.55);
+    if (blob.size > maxBytes) {
+      blob = await canvasToJpegBlob(canvas, 0.38);
+    }
+    scale -= 0.15;
+  }
+
+  if (blob.size > maxBytes) {
+    throw new Error('Image is still over 200KB after compression. Please choose a smaller photo.');
+  }
+
+  return blob;
+}
+
+/**
+ * Compresses any image File (max 800px width, JPG 70%, max 200KB) and returns a Data URL.
+ */
+export async function fileToBase64(file: File, options?: ProcessImageOptions): Promise<string> {
+  const compressedBlob = await compressImageForUpload(file, options);
+  return blobToDataUrl(compressedBlob);
 }

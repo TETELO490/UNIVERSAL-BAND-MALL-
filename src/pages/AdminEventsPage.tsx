@@ -488,6 +488,13 @@ export const AdminEventsPage: React.FC = () => {
                             </span>
                           </div>
 
+                          {pt.selectedBank && (
+                            <div className="bg-black/50 border border-[#FACC15]/30 rounded-lg px-2.5 py-1.5 text-[10px] font-bold text-[#FACC15] flex items-center justify-between">
+                              <span>Customer Bank:</span>
+                              <span className="text-white">{pt.selectedBank}</span>
+                            </div>
+                          )}
+
                           {pt.payshapRequestSent && (
                             <div className="bg-amber-500/15 border border-amber-400/40 rounded-lg px-2 py-1 text-[10px] font-bold text-amber-200">
                               Request Sent - Waiting for customer to approve in their bank app

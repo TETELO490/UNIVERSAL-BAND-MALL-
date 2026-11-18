@@ -70,7 +70,6 @@ import {
   isTopUpPayshapReference,
   extractEventNameFromPayshapRef,
   checkIsTymeBankPaymentAlertSms,
-  getEventPayfastReference,
 } from '../utils/ticketStatus';
 import {
   INITIAL_EVENTS,
@@ -280,17 +279,7 @@ interface AppContextType {
       ticketTier?: string;
       tierPrice?: string;
       payshapReference: string;
-    }
-  ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
-  buyTicketWithPayFast: (
-    event: EventItem,
-    customerData: {
-      fullName: string;
-      phone: string;
-      quantity?: number;
-      ticketTier?: string;
-      tierPrice?: string;
-      payfastReference: string;
+      selectedBank?: string;
     }
   ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
   adminApproveTicketPayment: (ticketId: string) => Promise<{ success: boolean; error?: string }>;
@@ -303,6 +292,9 @@ interface AppContextType {
   confirmTicketPaymentManually: (ticketId: string) => Promise<boolean>;
   confirmMallOrderPaymentManually: (orderId: string) => Promise<boolean>;
   markPayshapRequestSent: (ticketId: string) => Promise<boolean>;
+  updateTicketSelectedBank: (ticketId: string, bankName: string) => Promise<boolean>;
+  supportedBanks: string[];
+  updateSupportedBanks: (banks: string[]) => Promise<void>;
   processTymebankSms: (
     smsText: string,
     sender?: string
@@ -1118,6 +1110,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return [];
   });
 
+  const DEFAULT_SUPPORTED_BANKS = [
+    'Capitec Bank',
+    'FNB',
+    'Standard Bank',
+    'Absa',
+    'Nedbank',
+    'TymeBank',
+    'Discovery Bank',
+    'African Bank',
+  ];
+
+  const [supportedBanks, setSupportedBanks] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('ub_supported_banks');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((b) => String(b).trim()).filter(Boolean);
+        }
+      }
+    } catch {}
+    return DEFAULT_SUPPORTED_BANKS;
+  });
+
+  const updateSupportedBanks = async (banks: string[]) => {
+    const cleaned = Array.from(
+      new Set(banks.map((b) => String(b || '').trim()).filter(Boolean))
+    );
+    setSupportedBanks(cleaned);
+    try {
+      localStorage.setItem('ub_supported_banks', JSON.stringify(cleaned));
+    } catch {}
+    try {
+      await setDoc(
+        doc(db, 'settings', 'payshap'),
+        {
+          supportedBanks: cleaned,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('Could not persist supportedBanks to Firestore:', e);
+    }
+  };
+
   const updateTymebankPayshapNumber = async (num: string) => {
     const clean = num.trim();
     setTymebankPayshapNumber(clean);
@@ -1372,6 +1410,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             try {
               localStorage.setItem('tymebank_payshap_number', data.tymebankPayshapNumber);
             } catch {}
+          }
+          if (data && Array.isArray(data.supportedBanks)) {
+            const cleanedBanks = data.supportedBanks
+              .map((b: any) => String(b || '').trim())
+              .filter(Boolean);
+            if (cleanedBanks.length > 0) {
+              setSupportedBanks(cleanedBanks);
+              try {
+                localStorage.setItem('ub_supported_banks', JSON.stringify(cleanedBanks));
+              } catch {}
+            }
           }
           if (data && typeof data.paymentBankMessage === 'string' && data.paymentBankMessage.trim()) {
             const cleanBank = data.paymentBankMessage.trim();
@@ -3233,6 +3282,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ticketTier?: string;
       tierPrice?: string;
       payshapReference: string;
+      selectedBank?: string;
     }
   ): Promise<{ success: boolean; ticket?: Ticket; error?: string }> => {
     const liveEvent = events.find((e) => e.id === event.id) || event;
@@ -3310,114 +3360,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       purchase_date: nowIso,
       createdAt: nowIso,
       paymentStatus: 'WAITING FOR PAYMENT',
+      paymentMethod: 'PayShap',
+      ...(customerData.selectedBank ? { selectedBank: customerData.selectedBank } : {}),
       payshapReference: customerData.payshapReference,
-      payshapRequestSent: false,
-    };
-
-    try {
-      await setDoc(doc(db, 'tickets', newTicket.id), cleanForFirestore(newTicket));
-    } catch (e) {
-      console.warn('Could not write ticket to Firestore:', e);
-    }
-
-    setTickets((prev) => [newTicket, ...prev]);
-    notifyTicketLifecycleEvent(newTicket, 'waiting');
-
-    return {
-      success: true,
-      ticket: newTicket,
-    };
-  };
-
-  const buyTicketWithPayFast = async (
-    event: EventItem,
-    customerData: {
-      fullName: string;
-      phone: string;
-      quantity?: number;
-      ticketTier?: string;
-      tierPrice?: string;
-      payfastReference: string;
-    }
-  ): Promise<{ success: boolean; ticket?: Ticket; error?: string }> => {
-    const liveEvent = events.find((e) => e.id === event.id) || event;
-    if (isEventExpired(liveEvent)) {
-      return { success: false, error: 'This event has already passed.' };
-    }
-    if (liveEvent.status === 'Closed') {
-      return { success: false, error: 'Ticket sales for this event are closed.' };
-    }
-
-    const qty = Math.max(1, customerData.quantity || 1);
-    const localPaidSoldCount = tickets
-      .filter((t) => t.eventId === liveEvent.id && isTicketPaid(t))
-      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
-    const eventLimit =
-      liveEvent.ticketsAvailable !== undefined && liveEvent.ticketsAvailable !== null
-        ? Number(liveEvent.ticketsAvailable)
-        : null;
-    if (eventLimit !== null && Number.isFinite(eventLimit)) {
-      const remaining = Math.max(0, eventLimit - localPaidSoldCount);
-      if (remaining <= 0) {
-        return {
-          success: false,
-          error: `Sold Out! All ${eventLimit} tickets for "${liveEvent.title}" have been sold.`,
-        };
-      }
-      if (qty > remaining) {
-        return {
-          success: false,
-          error: `Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for "${liveEvent.title}". Please lower your quantity.`,
-        };
-      }
-    }
-
-    const unitPriceNum = parsePriceNumber(customerData.tierPrice || liveEvent.price);
-    const totalPriceNum = Math.round(unitPriceNum * qty * 100) / 100;
-    const formattedTotalPrice = `R${totalPriceNum % 1 === 0 ? totalPriceNum.toFixed(0) : totalPriceNum.toFixed(2)}`;
-    const custName = customerData.fullName.trim() || 'Attendee';
-    const custPhone = customerData.phone.trim() || '0820000000';
-    const resolvedTier = customerData.ticketTier || 'General';
-    const hostStore = liveEvent.storeId ? stores.find((s) => s.id === liveEvent.storeId) : undefined;
-    const nowIso = new Date().toISOString();
-
-    const custQrId = resolveCustomerQrId(currentUser.id, currentUser.customerQrId);
-    const randomFiveDigits = Math.floor(10000 + Math.random() * 90000);
-    const uniqueTicketCode = `UB-${randomFiveDigits}`;
-    const newTicket: Ticket = {
-      id: uniqueTicketCode,
-      ticketId: uniqueTicketCode,
-      eventId: liveEvent.id,
-      storeId: hostStore ? hostStore.id : (liveEvent.storeId || ''),
-      storeName: hostStore ? hostStore.name : (liveEvent.storeName || 'Event Venue'),
-      userId: currentUser.id || 'guest_user',
-      user_id: currentUser.id || 'guest_user',
-      customerQrId: custQrId || undefined,
-      eventName: liveEvent.title,
-      eventTitle: liveEvent.title,
-      eventDate: liveEvent.date,
-      event_date: liveEvent.event_date || liveEvent.date,
-      eventLocation: liveEvent.location || hostStore?.location || 'South Africa',
-      price: formattedTotalPrice,
-      quantity: qty,
-      ticketTier: resolvedTier,
-      tierName: resolvedTier,
-      attendeeName: custName,
-      attendeePhone: custPhone,
-      customerName: custName,
-      customerPhone: custPhone,
-      qrCode: custQrId || uniqueTicketCode,
-      bandCode: uniqueTicketCode,
-      status: 'valid',
-      attendanceStatus: 'OUTSIDE',
-      attendanceLogs: [],
-      purchaseDate: nowIso,
-      purchase_date: nowIso,
-      createdAt: nowIso,
-      paymentStatus: 'WAITING FOR PAYMENT',
-      paymentMethod: 'PayFast',
-      payfastReference: customerData.payfastReference,
-      payshapReference: customerData.payfastReference,
       payshapRequestSent: false,
     };
 
@@ -3454,6 +3399,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return true;
     } catch (e) {
       console.warn('Failed to update payshapRequestSent in Firestore:', e);
+      return true;
+    }
+  };
+
+  const updateTicketSelectedBank = async (ticketId: string, bankName: string): Promise<boolean> => {
+    const cleanBank = bankName.trim();
+    if (!cleanBank) return false;
+    const updates: Partial<Ticket> = {
+      selectedBank: cleanBank,
+    };
+    setTickets((prev) =>
+      prev.map((t) =>
+        t.id === ticketId || t.ticketId === ticketId ? { ...t, ...updates } : t
+      )
+    );
+    try {
+      await updateDoc(doc(db, 'tickets', ticketId), cleanForFirestore(updates));
+      return true;
+    } catch (e) {
+      console.warn('Failed to update selectedBank in Firestore:', e);
       return true;
     }
   };
@@ -3860,7 +3825,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const confirmTicketPaymentManually = async (ticketId: string): Promise<boolean> => {
     const targetTicket = ticketsRef.current.find((t) => t.id === ticketId || t.ticketId === ticketId);
     const refText =
-      targetTicket?.payfastReference ||
       targetTicket?.payshapReference ||
       targetTicket?.bandCode ||
       ticketId;
@@ -3888,7 +3852,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowIso = new Date().toISOString();
     const approvedByName = currentUser.fullName || currentUser.email || 'Admin Backup';
     const refText =
-      targetTicket.payfastReference ||
       targetTicket.payshapReference ||
       targetTicket.bandCode ||
       ticketId;
@@ -3972,7 +3935,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   /**
    * AUTOMATED MESSAGE DETECTION & MANUAL BACKUP APPROVAL:
-   * 1. The app looks for the payment confirmation message (PayFast or TymeBank/PayShap) on its own.
+   * 1. The app looks for the payment confirmation message (TymeBank/PayShap) on its own.
    *    If a matching waiting ticket is found, it automatically marks it PAID ✅.
    * 2. If no ticket matches automatically, or as backup, the admin can approve the ticket manually.
    */
@@ -3984,7 +3947,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!parsed.isPayment) {
       return {
         success: false,
-        message: 'Ignored SMS: not a recognized payment alert (TymeBank or PayFast).',
+        message: 'Ignored SMS: not a recognized TymeBank payment alert.',
       };
     }
 
@@ -4006,7 +3969,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (matchedTicket) {
       const refToSave =
         parsed.reference ||
-        matchedTicket.payfastReference ||
         matchedTicket.payshapReference ||
         matchedTicket.bandCode;
 
@@ -4020,7 +3982,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       playTicketPaidSuccessSound();
       void triggerBackgroundNotification(
         'Payment Approved Automatically ✅',
-        `${parsed.amount} received via ${parsed.gateway || 'PayFast'} for ${matchedTicket.attendeeName || matchedTicket.customerName} (${matchedTicket.eventTitle}). Ticket is now ACTIVE!`,
+        `${parsed.amount} received via ${parsed.gateway || 'PayShap'} for ${matchedTicket.attendeeName || matchedTicket.customerName} (${matchedTicket.eventTitle}). Ticket is now ACTIVE!`,
         `auto-paid-${matchedTicket.id}`
       );
 
@@ -4028,7 +3990,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: `auto_paid_${matchedTicket.id}_${nowMs}`,
         role: 'admin',
         title: 'Payment Auto-Approved ✅',
-        message: `${parsed.amount} received via ${parsed.gateway || 'PayFast'} — Ticket #${matchedTicket.bandCode || matchedTicket.id} is marked PAID!`,
+        message: `${parsed.amount} received via ${parsed.gateway || 'PayShap'} — Ticket #${matchedTicket.bandCode || matchedTicket.id} is marked PAID!`,
         variant: 'paid',
       });
 
@@ -8844,12 +8806,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         storeRequests,
         buyTicket,
         buyTicketWithPayShap,
-        buyTicketWithPayFast,
         adminApproveTicketPayment,
         updateTicketPaymentStatus,
         confirmTicketPaymentManually,
         confirmMallOrderPaymentManually,
         markPayshapRequestSent,
+        updateTicketSelectedBank,
+        supportedBanks,
+        updateSupportedBanks,
         processTymebankSms,
         scanRealSmsInbox,
         tymebankPayshapNumber,

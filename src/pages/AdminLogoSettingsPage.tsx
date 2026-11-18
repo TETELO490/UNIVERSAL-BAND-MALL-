@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { db, storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { compressImageForUpload } from '../utils/imageUploadHelper';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { ensurePhotosPermission } from '../utils/nativePermissions';
 import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
@@ -232,10 +233,11 @@ export const AdminLogoSettingsPage: React.FC = () => {
       // while guaranteeing the app NEVER hangs if Storage is unprovisioned.
       if (selectedFile && storage) {
         try {
+          const compressedBlob = await compressImageForUpload(selectedFile);
           const storagePromise = (async () => {
-            const storageRef = ref(storage, 'branding/logo.png');
-            const snap = await uploadBytes(storageRef, selectedFile, {
-              contentType: selectedFile.type || 'image/png',
+            const storageRef = ref(storage, 'branding/logo.jpg');
+            const snap = await uploadBytes(storageRef, compressedBlob, {
+              contentType: 'image/jpeg',
               customMetadata: {
                 uploadedBy: currentUser?.email || 'Admin',
                 uploadedAt: new Date().toISOString(),

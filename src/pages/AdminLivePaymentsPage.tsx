@@ -458,6 +458,13 @@ export const AdminLivePaymentsPage: React.FC = () => {
                   </span>
                 </div>
 
+                {t.selectedBank && (
+                  <div className="bg-white/5 border border-[#FACC15]/30 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-[#FACC15] flex items-center justify-between">
+                    <span>Customer Bank:</span>
+                    <span className="text-white">{t.selectedBank}</span>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   disabled={confirmingId === t.id}

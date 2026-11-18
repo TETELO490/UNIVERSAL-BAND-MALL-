@@ -38,12 +38,13 @@ export const TicketDetailModal: React.FC = () => {
     mallOrders,
     openEventFoodPreorder,
     tymebankPayshapNumber,
+    supportedBanks,
+    updateTicketSelectedBank,
     navigateTo,
     adminApproveTicketPayment,
   } = useApp();
   const [copied, setCopied] = useState<boolean>(false);
   const [copiedRef, setCopiedRef] = useState<boolean>(false);
-  const [copiedPayfastRef, setCopiedPayfastRef] = useState<boolean>(false);
   const [copiedNumber, setCopiedNumber] = useState<boolean>(false);
   const [phoneTapActive, setPhoneTapActive] = useState<boolean>(false);
   const [nfcWriteStatus, setNfcWriteStatus] = useState<string>('');
@@ -105,17 +106,6 @@ export const TicketDetailModal: React.FC = () => {
     selectedTicket.storeName ||
     'Venue Location';
 
-  const isPayFastPayment =
-    selectedTicket.paymentMethod === 'PayFast' ||
-    Boolean(selectedTicket.payfastReference) ||
-    String(selectedTicket.payshapReference || '').startsWith('PF-');
-
-  const resolvedPayfastRef =
-    selectedTicket.payfastReference ||
-    (String(selectedTicket.payshapReference || '').startsWith('PF-')
-      ? selectedTicket.payshapReference
-      : '');
-
   const resolvedPayshapRef =
     selectedTicket.payshapReference ||
     getEventPayshapReference(selectedTicket.eventTitle || selectedTicket.eventName);
@@ -132,14 +122,6 @@ export const TicketDetailModal: React.FC = () => {
     navigator.clipboard?.writeText(resolvedPayshapRef);
     setCopiedRef(true);
     setTimeout(() => setCopiedRef(false), 2500);
-  };
-
-  const handleCopyPayfastRef = () => {
-    const text = resolvedPayfastRef || selectedTicket.payshapReference;
-    if (!text) return;
-    navigator.clipboard?.writeText(text);
-    setCopiedPayfastRef(true);
-    setTimeout(() => setCopiedPayfastRef(false), 2500);
   };
 
   const handleCopyPayshapNum = () => {
@@ -301,80 +283,60 @@ export const TicketDetailModal: React.FC = () => {
                   <span className="text-[10px] font-black text-amber-200 tabular-nums">{selectedTicket.price}</span>
                 </div>
 
-                {isPayFastPayment ? (
-                  /* PayFast Specific Details */
-                  <div className="space-y-2">
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-[#FACC15]/40 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <span className="text-[9px] text-gray-400 block font-semibold flex items-center gap-1">
-                          <Zap className="w-3 h-3 text-[#FACC15]" /> PayFast Reference Code
-                        </span>
-                        <span className="font-mono font-black text-[#FACC15] text-xs break-all">
-                          {resolvedPayfastRef || selectedTicket.payshapReference || selectedTicket.bandCode}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleCopyPayfastRef}
-                        className="text-[10px] bg-[#FACC15] text-black font-black px-2.5 py-1 rounded flex items-center gap-1 shrink-0 cursor-pointer"
-                      >
-                        {copiedPayfastRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedPayfastRef ? 'Copied' : 'Copy'}</span>
-                      </button>
+                {/* Payment Request Flow: Customer waits for request & approves in their chosen banking app */}
+                <div className="space-y-2.5">
+                  {selectedTicket.payshapRequestSent ? (
+                    <div className="bg-emerald-500/20 border border-emerald-400/50 rounded-lg px-2.5 py-2 text-[11px] font-bold text-emerald-200">
+                      Payment Request Sent — Open your {selectedTicket.selectedBank || 'banking'} app now and approve the payment request.
                     </div>
-                    <div className="bg-white/5 p-2 rounded-lg text-[10px] text-gray-300 flex items-center justify-between">
-                      <span className="text-gray-400">Payment Gateway:</span>
-                      <span className="font-bold text-white">PayFast (Card / Instant EFT / Scan)</span>
+                  ) : (
+                    <div className="bg-black/60 border border-amber-400/30 rounded-lg p-2.5 space-y-1">
+                      <p className="text-xs font-bold text-white leading-snug">
+                        Wait for a payment request from us, then open your banking app and approve it.
+                      </p>
+                      <p className="text-[10px] text-amber-200/90 leading-snug">
+                        You do not need to send money manually to any number. Once we send the request, simply approve it in your banking app and your ticket will be confirmed as PAID ✅.
+                      </p>
                     </div>
-                    <p className="text-[10px] text-amber-200/90 leading-snug">
-                      The app is checking for the PayFast payment confirmation message on its own to automatically approve your ticket.
-                    </p>
-                  </div>
-                ) : (
-                  /* PayShap Specific Details */
-                  <div className="space-y-2">
-                    {selectedTicket.payshapRequestSent && (
-                      <div className="bg-amber-500/20 border border-amber-400/50 rounded-lg px-2.5 py-2 text-[11px] font-bold text-amber-200">
-                        Request Sent - Waiting for customer to approve in their bank app
-                      </div>
+                  )}
+
+                  {/* Bank / Account Selection from Admin-Managed List */}
+                  <div className="bg-black/60 p-2.5 rounded-lg border border-[#FACC15]/40 space-y-1.5">
+                    <label
+                      htmlFor="ticket-detail-bank-select"
+                      className="text-[10px] text-gray-300 font-bold block"
+                    >
+                      Your Bank / Account for Payment Approval
+                    </label>
+                    <select
+                      id="ticket-detail-bank-select"
+                      value={selectedTicket.selectedBank || ''}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          void updateTicketSelectedBank(
+                            selectedTicket.id || selectedTicket.ticketId,
+                            e.target.value
+                          );
+                        }
+                      }}
+                      className="w-full min-h-[40px] bg-[#121212] border border-white/15 focus:border-[#FACC15] rounded-lg px-2.5 py-2 text-xs font-bold text-[#FACC15] focus:outline-none cursor-pointer"
+                    >
+                      <option value="" disabled>
+                        -- Select your bank --
+                      </option>
+                      {supportedBanks.map((bank) => (
+                        <option key={bank} value={bank}>
+                          {bank}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedTicket.selectedBank && (
+                      <p className="text-[10px] text-emerald-300 font-semibold">
+                        Selected: {selectedTicket.selectedBank} — Watch your banking app for our payment request.
+                      </p>
                     )}
-                    <div className="bg-black/60 p-2 rounded-lg border border-white/10 flex items-center justify-between">
-                      <div>
-                        <span className="text-[9px] text-gray-400 block">PayShap ID / TymeBank Cell</span>
-                        <span className="font-mono font-bold text-white text-xs">{tymebankPayshapNumber}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleCopyPayshapNum}
-                        className="text-[10px] bg-white/10 hover:bg-white/20 text-white px-2 py-1 rounded flex items-center gap-1 cursor-pointer"
-                      >
-                        {copiedNumber ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedNumber ? 'Copied' : 'Copy'}</span>
-                      </button>
-                    </div>
-                    {resolvedPayshapRef && (
-                      <div className="bg-black/60 p-2 rounded-lg border border-[#FACC15]/40 flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <span className="text-[9px] text-gray-400 block">Required PayShap Reference</span>
-                          <span className="font-mono font-black text-[#FACC15] text-xs break-all">
-                            {resolvedPayshapRef}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleCopyPayshapRef}
-                          className="text-[10px] bg-[#FACC15] text-black font-black px-2 py-1 rounded flex items-center gap-1 shrink-0 cursor-pointer"
-                        >
-                          {copiedRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                          <span>{copiedRef ? 'Copied' : 'Copy Ref'}</span>
-                        </button>
-                      </div>
-                    )}
-                    <p className="text-[10px] text-amber-200/90 leading-snug">
-                      Pay from your bank app (Capitec, FNB, Nedbank, Standard Bank) or approve the PayShap Request. TymeBank SMS confirms it automatically.
-                    </p>
                   </div>
-                )}
+                </div>
 
                 {/* ADMIN MANUAL BACKUP APPROVAL ACCESS */}
                 {canAdminApprove && (

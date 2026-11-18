@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import { CreditCard, Lock, LogOut, Ticket as TicketIcon, User, ShieldCheck, Settings, PieChart, Radio, Download, Smartphone, Sparkles, Camera, Store, Bike } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
+import { fileToBase64 } from '../utils/imageUploadHelper';
 
 export const Header: React.FC = () => {
   const {
@@ -23,16 +24,15 @@ export const Header: React.FC = () => {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          updateCustomLogo(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+      try {
+        const compressed = await fileToBase64(file);
+        updateCustomLogo(compressed);
+      } catch (err) {
+        console.warn('Logo compression error:', err);
+      }
     }
   };
 

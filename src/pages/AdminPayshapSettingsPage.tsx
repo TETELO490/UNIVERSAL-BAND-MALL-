@@ -28,6 +28,8 @@ import {
   Trash2,
   Headphones,
   ShieldCheck,
+  Building2,
+  Plus,
 } from 'lucide-react';
 
 export const AdminPayshapSettingsPage: React.FC = () => {
@@ -36,6 +38,8 @@ export const AdminPayshapSettingsPage: React.FC = () => {
     firebaseUser,
     tymebankPayshapNumber,
     updateTymebankPayshapNumber,
+    supportedBanks,
+    updateSupportedBanks,
     newOrderSound,
     updateNewOrderSound,
     supportRingEnabled,
@@ -72,6 +76,8 @@ export const AdminPayshapSettingsPage: React.FC = () => {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [newBankInput, setNewBankInput] = useState<string>('');
+  const [bankSavedMsg, setBankSavedMsg] = useState<string | null>(null);
 
   // New Order Sound state
   const [draftSound, setDraftSound] = useState<NewOrderSoundConfig>(newOrderSound);
@@ -306,6 +312,92 @@ export const AdminPayshapSettingsPage: React.FC = () => {
           <span>{isSaving ? 'SAVING...' : 'SAVE'}</span>
         </button>
       </form>
+
+      {/* SUPPORTED CUSTOMER BANKS LIST (Admin-Managed) */}
+      <div className="bg-[#1A1A1A] border border-white/10 rounded-2xl p-5 space-y-4 shadow-xl">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-black text-white flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-[#FACC15]" />
+              <span>Supported Customer Banks</span>
+            </h2>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              Customers choose their bank from this list so you know which banking app to send their payment request to.
+            </p>
+          </div>
+          <span className="text-[10px] font-black text-[#FACC15] bg-[#FACC15]/10 border border-[#FACC15]/30 px-2 py-0.5 rounded-full shrink-0">
+            {supportedBanks.length} Banks
+          </span>
+        </div>
+
+        {/* Add Bank Input */}
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const clean = newBankInput.trim();
+            if (!clean) return;
+            if (supportedBanks.some((b) => b.toLowerCase() === clean.toLowerCase())) {
+              setNewBankInput('');
+              return;
+            }
+            await updateSupportedBanks([...supportedBanks, clean]);
+            setNewBankInput('');
+            setBankSavedMsg(`Added "${clean}" to customer bank list.`);
+            setTimeout(() => setBankSavedMsg(null), 3000);
+          }}
+          className="flex gap-2"
+        >
+          <input
+            type="text"
+            value={newBankInput}
+            onChange={(e) => setNewBankInput(e.target.value)}
+            placeholder="Add bank name (e.g. Capitec, FNB, Absa)..."
+            className="flex-1 min-h-[44px] bg-black/70 border border-white/15 focus:border-[#FACC15] rounded-xl px-3.5 py-2 text-xs font-bold text-white placeholder-gray-500 focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!newBankInput.trim()}
+            className="min-h-[44px] px-4 bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black font-black text-xs rounded-xl flex items-center gap-1 transition cursor-pointer disabled:opacity-40 shrink-0"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Add</span>
+          </button>
+        </form>
+
+        {bankSavedMsg && (
+          <div className="p-2.5 rounded-xl bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{bankSavedMsg}</span>
+          </div>
+        )}
+
+        {/* Current Banks List */}
+        <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+          {supportedBanks.map((bank) => (
+            <div
+              key={bank}
+              className="flex items-center justify-between gap-2 bg-black/60 border border-white/10 rounded-xl px-3 py-2.5"
+            >
+              <span className="text-xs font-bold text-white truncate">{bank}</span>
+              <button
+                type="button"
+                disabled={supportedBanks.length <= 1}
+                onClick={async () => {
+                  const next = supportedBanks.filter((b) => b !== bank);
+                  if (next.length === 0) return;
+                  await updateSupportedBanks(next);
+                  setBankSavedMsg(`Removed "${bank}" from customer bank list.`);
+                  setTimeout(() => setBankSavedMsg(null), 3000);
+                }}
+                className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 p-1.5 rounded-lg transition cursor-pointer disabled:opacity-30"
+                title="Remove bank"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* PAYMENT APPROVAL & LIVE ALARMS SECTION */}
       <div className="bg-[#1A1A1A] border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-xl">

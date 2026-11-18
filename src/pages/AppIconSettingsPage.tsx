@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { db, storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { compressImageForUpload } from '../utils/imageUploadHelper';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { ensurePhotosPermission } from '../utils/nativePermissions';
 import { isAuthorizedAdminEmail } from '../utils/cryptoHelper';
@@ -336,10 +337,11 @@ export const AppIconSettingsPage: React.FC = () => {
       // 2. Storage upload attempt with 1s timeout (non-blocking)
       if (selectedFile && storage) {
         try {
+          const compressedBlob = await compressImageForUpload(selectedFile);
           const storagePromise = (async () => {
-            const storageRef = ref(storage, 'branding/app-icon.png');
-            const snap = await uploadBytes(storageRef, selectedFile, {
-              contentType: selectedFile.type || 'image/png',
+            const storageRef = ref(storage, 'branding/app-icon.jpg');
+            const snap = await uploadBytes(storageRef, compressedBlob, {
+              contentType: 'image/jpeg',
               customMetadata: {
                 uploadedBy: currentUser?.email || 'Admin',
                 type: 'app_icon',
