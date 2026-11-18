@@ -11,6 +11,7 @@ export const MALL_FEES = {
   FLAT_FEE: 4,
   PER_ITEM_FEE: 1,
   FEE_CAP: 10,
+  DEFAULT_DELIVERY_FEE: 25,
   PHONE_LOOKUP_TOTAL: 5,
   PHONE_LOOKUP_STORE_SHARE: 2,
   PHONE_LOOKUP_PLATFORM_SHARE: 3,
@@ -27,6 +28,16 @@ export function calculatePlatformFee(totalQuantity: number): number {
   if (totalQuantity <= 0) return 0;
   const rawFee = MALL_FEES.FLAT_FEE + (totalQuantity * MALL_FEES.PER_ITEM_FEE);
   return Math.min(MALL_FEES.FEE_CAP, rawFee);
+}
+
+/**
+ * Resolves the recorded delivery fee on an order without inventing a fake fee if zero or unset.
+ */
+export function resolveDeliveryFee(fee?: number | null): number {
+  if (typeof fee === 'number' && Number.isFinite(fee) && fee >= 0) {
+    return fee;
+  }
+  return 0;
 }
 
 /**

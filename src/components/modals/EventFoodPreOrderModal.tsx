@@ -25,10 +25,11 @@ import {
   Phone,
   ShieldCheck,
 } from 'lucide-react';
-import { INITIAL_ITEMS } from '../../data/seedData';
 import { calculatePlatformFee } from '../../utils/mallFees';
 import { MealCustomizerModal } from './MealCustomizerModal';
 import { resolveCustomerQrId } from '../../utils/customerQr';
+import { isTicketPaid, isTicketWaitingPayment } from '../../utils/ticketStatus';
+import { doesUserPersonallyOwnTicket } from '../../utils/legacyCleanup';
 
 interface EventFoodPreOrderModalProps {
   event: EventItem | null;
@@ -48,7 +49,11 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
     topUpWallet,
     setSelectedBuyingEvent,
     stores,
+    menuFood,
+    menuAlcohol,
+    menuSoftDrinks,
     createMallOrder,
+    checkIsStoreOnline,
     setActiveModal,
   } = useApp();
 
@@ -69,54 +74,84 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
 
   const userAge = getUserAge(currentUser);
 
-  // Find matching user ticket for this event
-  const userTicket = event
-    ? tickets.find(
-        (t) =>
-          t.eventId === event.id &&
-          (t.userId === currentUser?.id || (Boolean(currentUser?.phone) && t.customerPhone === currentUser?.phone))
+  // Find matching PAID user ticket for this event (unpaid waiting tickets do not unlock pre-order)
+  const matchingTickets = event
+    ? tickets.filter(
+        (t) => t.eventId === event.id && doesUserPersonallyOwnTicket(t, currentUser)
       )
-    : null;
+    : [];
+  const userTicket = matchingTickets.find((t) => isTicketPaid(t)) || null;
+  const waitingTicket = !userTicket ? matchingTickets.find((t) => isTicketWaitingPayment(t)) || null : null;
 
   const hasTicket = Boolean(userTicket);
 
-  // Fetch items for this event's store
+  const organizerUid = event?.creatorId || event?.organizerId || '';
+  const resolvedMenuStoreId = event?.storeId || (organizerUid ? `org_${organizerUid}` : '');
+
+  // Fetch items for this event's store OR standalone organizer pre-order menu
   useEffect(() => {
     if (!event || !isOpen) return;
 
-    const storeId = event.storeId || '';
-    if (!storeId) {
-      setEventItems([]);
+    const getFallbackMenuItems = (): MenuItemDoc[] => {
+      const matchesEventMenu = (item: any) =>
+        (resolvedMenuStoreId && item.storeId === resolvedMenuStoreId) ||
+        (organizerUid && item.creatorId === organizerUid);
+
+      return [...menuFood, ...menuAlcohol, ...menuSoftDrinks]
+        .filter(matchesEventMenu)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          price: parseFloat(String(item.price || '0').replace(/[^0-9.]/g, '')) || 0,
+          image: item.imageUrl || '',
+          imageUrl: item.imageUrl || '',
+          category: item.category === 'food' ? 'food' : 'drink',
+          subCategory: item.category === 'alcohol' ? 'alcohol' : undefined,
+          isAlcohol: item.category === 'alcohol',
+          storeId: resolvedMenuStoreId,
+          storeName: event.storeName || event.title || 'Event Menu',
+          available: true,
+          description: item.description,
+          ingredients: item.ingredients,
+          allowIngredientRemoval: item.allowIngredientRemoval,
+        }));
+    };
+
+    if (!resolvedMenuStoreId) {
+      setEventItems(getFallbackMenuItems());
       setItemsLoading(false);
       return;
     }
 
     setItemsLoading(true);
     const itemsCol = collection(db, 'items');
-    const qStore = query(itemsCol, where('storeId', '==', storeId));
+    const qStore = query(itemsCol, where('storeId', '==', resolvedMenuStoreId));
 
     const unsub = onSnapshot(
       qStore,
       (snap) => {
-        if (snap.empty) {
-          const fallback = INITIAL_ITEMS.filter((i) => i.storeId === storeId);
-          setEventItems(fallback);
-        } else {
-          const list: MenuItemDoc[] = [];
-          snap.forEach((d) => list.push({ id: d.id, ...(d.data() as any) }));
-          setEventItems(list);
+        const list: MenuItemDoc[] = [];
+        const seen = new Set<string>();
+        snap.forEach((d) => {
+          seen.add(d.id);
+          list.push({ id: d.id, ...(d.data() as any) });
+        });
+        for (const fb of getFallbackMenuItems()) {
+          if (!seen.has(fb.id)) {
+            list.push(fb);
+          }
         }
+        setEventItems(list);
         setItemsLoading(false);
       },
       () => {
-        const fallback = INITIAL_ITEMS.filter((i) => i.storeId === storeId || !i.storeId);
-        setEventItems(fallback);
+        setEventItems(getFallbackMenuItems());
         setItemsLoading(false);
       }
     );
 
     return () => unsub();
-  }, [event, isOpen]);
+  }, [event, isOpen, resolvedMenuStoreId, organizerUid, menuFood, menuAlcohol, menuSoftDrinks]);
 
   if (!isOpen || !event) return null;
 
@@ -174,12 +209,22 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
     setErrorMessage(null);
 
     if (!hasTicket || !userTicket) {
-      setErrorMessage('You must purchase an Event Ticket first to unlock the event food menu.');
+      setErrorMessage(
+        waitingTicket
+          ? 'Your ticket payment is still WAITING FOR PAYMENT approval. Approve/verify your ticket payment first to unlock pre-orders.'
+          : 'You must purchase a PAID Event Ticket first to unlock the event food menu.'
+      );
       return;
     }
 
     if (isEventExpired(event)) {
       setErrorMessage('This event has already passed. Food pre-orders are closed.');
+      return;
+    }
+
+    const storeIdForCheck = event.storeId || '';
+    if (storeIdForCheck && !checkIsStoreOnline(storeIdForCheck)) {
+      setErrorMessage(`Sales Paused: "${storeName}" has no online staff/owner device right now to accept pre-orders.`);
       return;
     }
 
@@ -200,6 +245,7 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
     }
 
     setIsSubmitting(true);
+    let toppedUpExternal = 0;
 
     try {
       // 1. Convert local event cart entries into custom CartItems
@@ -213,7 +259,7 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
         category: e.item.category,
         subCategory: e.item.subCategory,
         isAlcohol: e.item.isAlcohol,
-        storeId: event.storeId || '',
+        storeId: resolvedMenuStoreId || event.storeId || '',
         storeName,
         ingredients: e.item.ingredients,
         allowIngredientRemoval: e.item.allowIngredientRemoval,
@@ -226,11 +272,12 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
           ? `${paymentMethod} Top-up (Wallet R${walletDeduction.toFixed(2)} + ${paymentMethod} R${externalAmount.toFixed(2)})`
           : `${paymentMethod} Direct Pre-Order`;
         await topUpWallet(externalAmount, topupMemo);
+        toppedUpExternal = externalAmount;
       }
 
       // 3. Create Mall Order passing customItems so it does NOT fail with empty store cart
       const orderRes = await createMallOrder({
-        storeId: event.storeId || '',
+        storeId: resolvedMenuStoreId || event.storeId || '',
         storeName,
         storeLocation: event.location || 'Event Grounds',
         customerPhone: cleanPhone,
@@ -243,6 +290,9 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
       });
 
       if (!orderRes.success || !orderRes.order) {
+        if (toppedUpExternal > 0) {
+          await topUpWallet(-toppedUpExternal, 'Pre-Order Failed Rollback');
+        }
         setErrorMessage(orderRes.error || 'Failed to place event food pre-order.');
         setIsSubmitting(false);
         return;
@@ -268,6 +318,9 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
           try {
             const resDoc: ReservationDoc = {
               walletId: wId,
+              customerId: wId,
+              customerName: customerName.trim() || currentUser?.fullName || currentUser?.name || 'Customer',
+              customerPhone: cleanPhone,
               customerQrId: resolveCustomerQrId(wId, currentUser?.customerQrId) || undefined,
               storeId: item.storeId,
               storeName: item.storeName,
@@ -278,8 +331,14 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
               quantity: item.quantity,
               price: item.price,
               total: item.price * item.quantity,
+              category: item.category,
+              subCategory: item.subCategory,
+              isAlcohol: item.isAlcohol,
+              removedIngredients: item.removedIngredients,
+              collectionCode: orderRes.order.collectionCode || orderRes.order.orderNumber,
               status: 'reserved_for_event',
               paidAt: serverTimestamp(),
+              createdAt: new Date().toISOString(),
             };
             await setDoc(doc(collection(db, 'reservations')), resDoc);
           } catch (err) {
@@ -291,6 +350,9 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
       setSuccessOrder(orderRes.order);
       setEventCart({});
     } catch (err: any) {
+      if (toppedUpExternal > 0) {
+        await topUpWallet(-toppedUpExternal, 'Pre-Order Error Rollback').catch(() => {});
+      }
       setErrorMessage(err?.message || 'Error completing event food pre-order.');
     } finally {
       setIsSubmitting(false);
@@ -398,34 +460,54 @@ export const EventFoodPreOrderModal: React.FC<EventFoodPreOrderModalProps> = ({
 
               <div>
                 <span className="text-[10px] font-black uppercase text-amber-400 tracking-wider block mb-1">
-                  TICKET REQUIRED TO PRE-ORDER EVENT FOOD
+                  {waitingTicket ? 'PAYMENT APPROVAL REQUIRED' : 'TICKET REQUIRED TO PRE-ORDER EVENT FOOD'}
                 </span>
                 <h3 className="text-lg font-black text-white leading-tight">
-                  Event Food Menu Locked 🔒
+                  {waitingTicket ? 'Ticket Payment Pending Approval 🔒' : 'Event Food Menu Locked 🔒'}
                 </h3>
                 <p className="text-xs text-gray-300 mt-2 leading-relaxed">
-                  To pre-order food & drinks for <strong>"{event.title}"</strong> on <strong>{event.date}</strong>, you must purchase an Event Ticket first.
+                  {waitingTicket ? (
+                    <>
+                      Your ticket <strong>{waitingTicket.bandCode || waitingTicket.id}</strong> is currently <strong>WAITING FOR PAYMENT</strong> approval. Once approved (PAID), event food pre-orders unlock automatically!
+                    </>
+                  ) : (
+                    <>
+                      To pre-order food & drinks for <strong>"{event.title}"</strong> on <strong>{event.date}</strong>, you must purchase a PAID Event Ticket first.
+                    </>
+                  )}
                 </p>
               </div>
 
               <div className="bg-black/60 p-3 rounded-2xl border border-white/10 text-left space-y-1.5 text-[11px] text-gray-300">
                 <div className="flex items-start gap-2 text-amber-300 font-bold">
                   <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Rule: Ticket = Key to unlock event food menu.</span>
+                  <span>Rule: Paid Ticket = Key to unlock event food menu.</span>
                 </div>
                 <p className="text-[10px] text-gray-400 pl-6">
-                  Once your ticket is confirmed, the event food & drink menu unlocks automatically so you can pre-order for event day!
+                  {waitingTicket
+                    ? 'Complete your PayShap bank payment and wait for admin/promoter verification to mark your ticket as PAID.'
+                    : 'Once your ticket payment is approved, the event food & drink menu unlocks automatically so you can pre-order for event day!'}
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={handleBuyTicketFirst}
-                className="w-full py-3.5 px-4 bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black font-extrabold text-xs rounded-2xl shadow-xl transition flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <TicketIcon className="w-4 h-4 stroke-[2.5]" />
-                <span>Buy Ticket for {event.title} First 🎟️</span>
-              </button>
+              {waitingTicket ? (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="w-full py-3.5 px-4 bg-white/10 hover:bg-white/20 text-white font-extrabold text-xs rounded-2xl transition cursor-pointer"
+                >
+                  Close & Wait for Approval
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleBuyTicketFirst}
+                  className="w-full py-3.5 px-4 bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black font-extrabold text-xs rounded-2xl shadow-xl transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <TicketIcon className="w-4 h-4 stroke-[2.5]" />
+                  <span>Buy Ticket for {event.title} First 🎟️</span>
+                </button>
+              )}
             </div>
           ) : (
             /* UNLOCKED SCREEN: HAS TICKET -> EVENT FOOD MENU */

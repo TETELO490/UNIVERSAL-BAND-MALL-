@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { MallOrder } from '../../types';
+import { resolveDeliveryFee } from '../../utils/mallFees';
+import { normalizePhoneDigits } from '../../utils/customerQr';
 import Scanner from '../Scanner';
 import { DriverMapModal } from './DriverMapModal';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   X,
   Bike,
@@ -32,6 +35,7 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
     mallOrders,
     acceptOrder,
     verifyCustomerDelivery,
+    confirmCustomerDeliveryComplete,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'available' | 'active' | 'earnings'>('available');
@@ -49,9 +53,11 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
   );
   const [isEditingProfile, setIsEditingProfile] = useState<boolean>(false);
 
-  // Scanner state
+  // Scanner & completion state
   const [showScanner, setShowScanner] = useState<boolean>(false);
   const [manualPinInput, setManualPinInput] = useState<string>('');
+  const [pendingCustomerConfirm, setPendingCustomerConfirm] = useState<MallOrder | null>(null);
+  const [isCompletingDelivery, setIsCompletingDelivery] = useState<boolean>(false);
   const [actionNotice, setActionNotice] = useState<{
     success: boolean;
     message: string;
@@ -63,43 +69,61 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
 
   if (!isOpen) return null;
 
-  const currentDriverId = currentUser?.id || 'driver_default';
+  const currentDriverId = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
+  const normalizedDriverPhone = normalizePhoneDigits(driverPhone || currentUser?.phone || '');
+  const doesOrderBelongToDriver = (o: MallOrder): boolean => {
+    if (!currentDriverId) return false;
+    if (o.deliveryDriverId === currentDriverId) return true;
+    const oPhone = normalizePhoneDigits(o.deliveryDriverPhone || '');
+    return normalizedDriverPhone.length >= 7 && oPhone.length >= 7 && oPhone === normalizedDriverPhone;
+  };
 
-  // 1. Available orders: Delivery orders that are ready_for_pickup or paid, and not yet accepted
-  const availableOrders = mallOrders.filter(
-    (o) =>
-      o.collectionMethod === 'DELIVERY' &&
-      (o.status === 'ready_for_pickup' || o.status === 'paid') &&
-      (!o.deliveryDriverId || o.deliveryDriverId === '')
-  );
+  // 1. Available orders: Paid delivery orders ready_for_pickup or paid, not yet accepted
+  const availableOrders = currentDriverId
+    ? mallOrders.filter(
+        (o) =>
+          o.collectionMethod === 'DELIVERY' &&
+          o.paymentStatus !== 'WAITING FOR PAYMENT' &&
+          o.paymentStatus !== 'PENDING_PAYMENT' &&
+          (o.status === 'ready_for_pickup' || o.status === 'paid') &&
+          (!o.deliveryDriverId || o.deliveryDriverId === '')
+      )
+    : [];
 
-  // 2. Active delivery: order locked to this driver that is not yet completed
-  const activeDelivery = mallOrders.find(
-    (o) =>
-      o.collectionMethod === 'DELIVERY' &&
-      (o.deliveryDriverId === currentDriverId ||
-        (o.deliveryDriverPhone && o.deliveryDriverPhone === driverPhone) ||
-        (o.deliveryDriverName && o.deliveryDriverName === driverName)) &&
-      o.status !== 'delivered' &&
-      o.status !== 'collected' &&
-      o.status !== 'cancelled'
-  );
+  // 2. Active delivery: order locked strictly to this driver that is not yet completed
+  const activeDelivery = currentDriverId
+    ? mallOrders.find(
+        (o) =>
+          o.collectionMethod === 'DELIVERY' &&
+          doesOrderBelongToDriver(o) &&
+          o.status !== 'delivered' &&
+          o.status !== 'collected' &&
+          o.status !== 'cancelled'
+      )
+    : undefined;
 
-  // 3. Completed deliveries: by this driver
-  const completedDeliveries = mallOrders.filter(
-    (o) =>
-      o.collectionMethod === 'DELIVERY' &&
-      o.status === 'delivered' &&
-      (o.deliveryDriverId === currentDriverId ||
-        o.deliveryDriverPhone === driverPhone ||
-        o.deliveryDriverName === driverName)
-  );
+  // 3. Completed deliveries: strictly by this driver
+  const completedDeliveries = currentDriverId
+    ? mallOrders.filter(
+        (o) =>
+          o.collectionMethod === 'DELIVERY' &&
+          o.status === 'delivered' &&
+          doesOrderBelongToDriver(o)
+      )
+    : [];
 
-  const totalEarnings = completedDeliveries.reduce((sum, o) => sum + (o.deliveryFee || 25), 0);
+  const totalEarnings = completedDeliveries.reduce((sum, o) => sum + resolveDeliveryFee(o.deliveryFee), 0);
 
   // Handle Driver Accepts Order
   const handleAcceptOrder = async (order: MallOrder) => {
     setActionNotice(null);
+    if (!currentDriverId) {
+      setActionNotice({
+        success: false,
+        message: 'Please log in with your registered Driver account before accepting deliveries.',
+      });
+      return;
+    }
     if (!driverName.trim() || !driverPhone.trim()) {
       setIsEditingProfile(true);
       setActionNotice({
@@ -127,13 +151,33 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
   const handleCustomerScanVerified = async (scannedText: string) => {
     setShowScanner(false);
     setActionNotice(null);
+    setPendingCustomerConfirm(null);
 
     const res = await verifyCustomerDelivery(scannedText, currentDriverId);
-    if (res.success) {
+    if (res.success && res.customerVerified && res.order) {
+      setPendingCustomerConfirm(res.order);
       setActionNotice({ success: true, message: res.message });
       setManualPinInput('');
     } else {
       setActionNotice({ success: false, message: res.message });
+    }
+  };
+
+  // Handle final confirmation + wallet payout after customer verification
+  const handleConfirmDeliveryCompletion = async () => {
+    if (!pendingCustomerConfirm || isCompletingDelivery) return;
+    setIsCompletingDelivery(true);
+    try {
+      const res = await confirmCustomerDeliveryComplete(pendingCustomerConfirm.id);
+      if (res.success) {
+        setActionNotice({ success: true, message: res.message });
+        setPendingCustomerConfirm(null);
+        setActiveTab('earnings');
+      } else {
+        setActionNotice({ success: false, message: res.message });
+      }
+    } finally {
+      setIsCompletingDelivery(false);
     }
   };
 
@@ -374,9 +418,9 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
 
                     <div className="text-right">
                       <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block">
-                        +R{(ord.deliveryFee || 25).toFixed(2)} Fee
+                        +R{resolveDeliveryFee(ord.deliveryFee).toFixed(2)} Fee
                       </span>
-                      <span className="text-[10px] text-gray-400 block mt-0.5">~2.2 km away</span>
+                      <span className="text-[10px] text-gray-500 font-mono block mt-0.5">{ord.orderNumber}</span>
                     </div>
                   </div>
 
@@ -434,10 +478,22 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
             ) : (
               <div className="space-y-4">
                 {/* Status Stepper */}
+                {(() => {
+                  const isOutForDelivery = activeDelivery.status === 'out_for_delivery' || activeDelivery.status === 'collected_by_driver';
+                  const driverPickupQrPayload = JSON.stringify({
+                    type: 'DRIVER_STORE_PICKUP',
+                    orderId: activeDelivery.id,
+                    pin: activeDelivery.pickupPin || '',
+                    driverId: currentDriverId,
+                    driverName: activeDelivery.deliveryDriverName || driverName,
+                    driverPlate: activeDelivery.deliveryDriverPlate || driverPlate,
+                  });
+                  return (
+                    <>
                 <div className="bg-gray-50 rounded-2xl p-3 border border-gray-200">
                   <div className="flex items-center justify-between text-xs font-black">
                     <span className="text-[#0D47A1]">
-                      {activeDelivery.status === 'out_for_delivery'
+                      {isOutForDelivery
                         ? 'STEP 2: DELIVERING TO CUSTOMER'
                         : 'STEP 1: COLLECTING FROM VENDOR'}
                     </span>
@@ -451,7 +507,7 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                     <div className="flex-1 h-2 rounded-full bg-emerald-500" />
                     <div
                       className={`flex-1 h-2 rounded-full ${
-                        activeDelivery.status === 'out_for_delivery'
+                        isOutForDelivery
                           ? 'bg-emerald-500'
                           : 'bg-gray-300'
                       }`}
@@ -460,8 +516,8 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                   </div>
                 </div>
 
-                {/* PHASE 1: Heading to Store (Status: ready_for_pickup) */}
-                {activeDelivery.status !== 'out_for_delivery' && (
+                {/* PHASE 1: Heading to Store (before store scans driver QR/PIN) */}
+                {!isOutForDelivery && (
                   <div className="bg-white rounded-2xl p-4 border-2 border-[#0D47A1] shadow-sm space-y-3.5">
                     <div className="flex items-start justify-between">
                       <div>
@@ -476,7 +532,7 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                         </p>
                       </div>
                       <span className="bg-blue-50 text-[#0D47A1] text-xs font-black px-2.5 py-1 rounded-xl border border-blue-200">
-                        +R{(activeDelivery.deliveryFee || 25).toFixed(2)}
+                        +R{resolveDeliveryFee(activeDelivery.deliveryFee).toFixed(2)}
                       </span>
                     </div>
 
@@ -507,16 +563,26 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                       </button>
                     </div>
 
-                    {/* STORE PICKUP PIN PASS (Driver gives this PIN to the store vendor) */}
-                    <div className="bg-blue-50/70 border-2 border-[#0D47A1]/30 rounded-2xl p-4 flex flex-col items-center justify-center text-center space-y-2">
+                    {/* STORE PICKUP QR & PIN PASS (Shop worker/owner scans QR OR checks PIN) */}
+                    <div className="bg-blue-50/70 border-2 border-[#0D47A1]/30 rounded-2xl p-4 flex flex-col items-center justify-center text-center space-y-2.5">
                       <span className="text-xs font-black text-[#0D47A1] uppercase tracking-wider">
-                        Store Pickup Verification PIN
+                        Store Pickup Ticket (QR & PIN)
                       </span>
                       <p className="text-[11px] text-gray-600 max-w-xs">
-                        Give this 6-digit Pickup PIN to the store vendor to verify you and collect the parcel.
+                        Let the store staff scan this single-use Pickup QR ticket (or enter PIN) to confirm handover.
                       </p>
-                      <div className="bg-white px-5 py-2.5 rounded-xl border border-blue-200 text-center shadow-sm">
-                        <span className="font-mono font-black text-2xl text-[#0D47A1] tracking-widest tabular-nums">
+                      <div className="bg-white p-3 rounded-2xl border border-blue-200 shadow-sm">
+                        <QRCodeSVG
+                          value={driverPickupQrPayload}
+                          size={140}
+                          level="M"
+                          bgColor="#FFFFFF"
+                          fgColor="#0D47A1"
+                        />
+                      </div>
+                      <div className="bg-white px-5 py-2 rounded-xl border border-blue-200 text-center shadow-sm">
+                        <span className="text-[9px] text-gray-500 uppercase font-bold block">Backup Pickup PIN</span>
+                        <span className="font-mono font-black text-xl text-[#0D47A1] tracking-widest tabular-nums">
                           {activeDelivery.pickupPin || '—'}
                         </span>
                       </div>
@@ -524,8 +590,8 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                   </div>
                 )}
 
-                {/* PHASE 2: Out For Delivery to Customer (Status: out_for_delivery) */}
-                {activeDelivery.status === 'out_for_delivery' && (
+                {/* PHASE 2: Out For Delivery to Customer */}
+                {isOutForDelivery && (
                   <div className="bg-white rounded-2xl p-4 border-2 border-emerald-500 shadow-md space-y-4">
                     <div className="flex items-center justify-between">
                       <span className="bg-emerald-100 text-emerald-900 text-xs font-black px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -533,7 +599,7 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                         <span>Food in Hand • On The Way</span>
                       </span>
                       <span className="text-xs font-black text-emerald-700">
-                        +R{(activeDelivery.deliveryFee || 25).toFixed(2)} Fee
+                        +R{resolveDeliveryFee(activeDelivery.deliveryFee).toFixed(2)} Fee
                       </span>
                     </div>
 
@@ -642,20 +708,15 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
 
                       {/* Manual Backup PIN Input */}
                       <div className="pt-2 border-t border-amber-200 space-y-2">
-                        <label className="text-[11px] font-bold text-amber-900 flex items-center justify-between">
-                          <span>OR Enter Customer Delivery PIN / Last 4 Digits:</span>
-                          {activeDelivery.deliveryPin && (
-                            <span className="text-[10px] text-gray-500 font-mono">
-                              PIN: {activeDelivery.deliveryPin}
-                            </span>
-                          )}
+                        <label className="text-[11px] font-bold text-amber-900 block">
+                          OR Enter Customer Delivery PIN / Last 4 Phone Digits:
                         </label>
                         <div className="flex gap-2">
                           <input
                             type="text"
                             value={manualPinInput}
                             onChange={(e) => setManualPinInput(e.target.value)}
-                            placeholder="e.g. 6-digit PIN or phone..."
+                            placeholder="e.g. 6-digit PIN from customer..."
                             className="flex-1 bg-white border-2 border-amber-300 rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:border-amber-600"
                           />
                           <button
@@ -663,13 +724,41 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                             onClick={handleManualCustomerVerify}
                             className="py-2 px-4 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs rounded-xl shadow active:scale-95 transition cursor-pointer"
                           >
-                            Verify & Finish
+                            Verify
                           </button>
                         </div>
                       </div>
+
+                      {/* Confirmed Customer Completion & Payout Card */}
+                      {pendingCustomerConfirm && (
+                        <div className="p-3 bg-emerald-100 border-2 border-emerald-500 rounded-2xl space-y-2.5">
+                          <div className="flex items-center gap-2 text-xs font-black text-emerald-950">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                            <span>
+                              Customer Verified: {pendingCustomerConfirm.customerName} ({pendingCustomerConfirm.orderNumber})
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isCompletingDelivery}
+                            onClick={handleConfirmDeliveryCompletion}
+                            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>
+                              {isCompletingDelivery
+                                ? 'Completing...'
+                                : `Confirm Drop-Off & Credit +R${resolveDeliveryFee(pendingCustomerConfirm.deliveryFee).toFixed(2)}`}
+                            </span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -717,7 +806,7 @@ export const DriverDashboardModal: React.FC<DriverDashboardModalProps> = ({
                         {ord.orderNumber} • {ord.storeName}
                       </span>
                       <span className="text-emerald-700 font-black">
-                        +R{(ord.deliveryFee || 25).toFixed(2)}
+                        +R{resolveDeliveryFee(ord.deliveryFee).toFixed(2)}
                       </span>
                     </div>
 

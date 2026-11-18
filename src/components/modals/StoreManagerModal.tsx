@@ -453,7 +453,7 @@ export const StoreManagerModal: React.FC = () => {
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Pretoria Gold Lounge, Florence Palm"
+              placeholder="e.g. Your Lounge, Grill or Bottle Store"
               className="w-full bg-[#1C1C1C] border border-white/15 rounded-xl px-3.5 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-[#FACC15] focus:ring-1 focus:ring-[#FACC15] text-sm font-semibold tracking-wide"
             />
           </div>

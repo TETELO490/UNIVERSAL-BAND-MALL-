@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Ticket } from '../types';
 import { db } from '../firebase';
-import { collection, onSnapshot, doc, updateDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, runTransaction } from 'firebase/firestore';
 import {
   Search,
   CheckCircle2,
@@ -27,12 +27,21 @@ import {
 } from 'lucide-react';
 import { TicketQrScannerModal } from '../components/modals/TicketQrScannerModal';
 import { maskPhoneNumber, normalizePhone, formatMovementTime } from '../utils/attendanceService';
+import { isTicketPaid } from '../utils/ticketStatus';
+import { getTicketQuantity } from '../utils/eventTicketLimit';
+import {
+  getUserOwnedStoreIds,
+  getUserOwnedEventIds,
+  isLegacyTestTicket,
+  isUserVerifiedAdminSession,
+} from '../utils/legacyCleanup';
 import { AttendanceStatus } from '../types';
 
 export const CheckInPage: React.FC = () => {
   const {
     tickets,
     stores,
+    events,
     checkInTicket,
     checkOutTicket,
     currentUser,
@@ -60,9 +69,25 @@ export const CheckInPage: React.FC = () => {
   }, []);
 
   const handleCollectReservation = async (res: any) => {
-    if (res.status === 'refunded') {
+    if (res.status === 'refunded' || res.status === 'cancelled') {
       setFeedback({
         message: `ORDER REFUNDED: This pre-order was cancelled and refunded. Cannot collect!`,
+        type: 'error',
+      });
+      return;
+    }
+
+    if (res.status === 'collected' || res.status === 'released' || res.collectedAt) {
+      setFeedback({
+        message: `ALREADY COLLECTED: Single-use reservation "${res.itemName}" was already handed over.`,
+        type: 'error',
+      });
+      return;
+    }
+
+    if (res.paymentStatus === 'WAITING FOR PAYMENT' || res.paymentStatus === 'PENDING_PAYMENT') {
+      setFeedback({
+        message: `UNPAID RESERVATION: Payment for "${res.itemName}" has not been approved yet.`,
         type: 'error',
       });
       return;
@@ -78,43 +103,87 @@ export const CheckInPage: React.FC = () => {
     }
 
     try {
-      await updateDoc(doc(db, 'reservations', res.id), {
-        status: 'collected',
-        collectedAt: new Date(),
-        collectedBy: currentUser.name,
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, 'reservations', res.id);
+        const snap = await tx.get(ref);
+        if (snap.exists()) {
+          const data = snap.data() as any;
+          if (data.status === 'collected' || data.status === 'released' || data.collectedAt) {
+            throw new Error('ALREADY_COLLECTED');
+          }
+          if (data.status === 'refunded' || data.status === 'cancelled') {
+            throw new Error('REFUNDED');
+          }
+        }
+        tx.update(ref, {
+          status: 'collected',
+          collectedAt: new Date(),
+          collectedBy: currentUser.name,
+        });
       });
       setFeedback({
         message: `COLLECTED: Handed over ${res.itemName} at ${res.storeName || promoterStoreName}!`,
         type: 'success',
       });
     } catch (e: any) {
-      setFeedback({
-        message: `Collection failed: ${e?.message || e}`,
-        type: 'error',
-      });
+      if (e?.message === 'ALREADY_COLLECTED') {
+        setFeedback({
+          message: `ALREADY COLLECTED: Single-use reservation "${res.itemName}" was already redeemed.`,
+          type: 'error',
+        });
+      } else if (e?.message === 'REFUNDED') {
+        setFeedback({
+          message: `ORDER REFUNDED: Cannot collect a refunded reservation.`,
+          type: 'error',
+        });
+      } else {
+        setFeedback({
+          message: `Collection failed: ${e?.message || e}`,
+          type: 'error',
+        });
+      }
     }
   };
 
-  const isAdmin = currentUser.role === 'Admin';
-  const isPromoter = currentUser.role === 'Promoter';
-  const promoterStoreId = currentUser.assignedStoreId || stores[0]?.id || '';
+  const isAdmin = isUserVerifiedAdminSession(currentUser);
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const isPromoter =
+    !isAdmin &&
+    (roleLower === 'promoter' ||
+      roleLower === 'event organiser' ||
+      roleLower === 'organizer' ||
+      roleLower === 'seller' ||
+      roleLower === 'store manager' ||
+      roleLower === 'manager');
+  const ownedStoreIds = useMemo(
+    () => getUserOwnedStoreIds(currentUser, stores),
+    [currentUser, stores]
+  );
+  const ownedEventIds = useMemo(
+    () => getUserOwnedEventIds(currentUser, events, stores),
+    [currentUser, events, stores]
+  );
+  const promoterStoreId = currentUser?.assignedStoreId || '';
   const promoterStoreName =
-    currentUser.assignedStoreName ||
+    currentUser?.assignedStoreName ||
     stores.find((s) => s.id === promoterStoreId)?.name ||
-    'Assigned Venue';
+    'Your Event Venue';
 
-  // Real-time search scoped to own store if promoter, or global if admin
+  // Real-time search scoped to own store/events if organizer/promoter, or global if admin
   const matchedTickets = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
+    const activeEventSet = new Set(events.map((e) => e.id));
 
     return tickets.filter((ticket) => {
+      if (isLegacyTestTicket(ticket, activeEventSet)) return false;
+
       // 1. Role Scoping:
-      // If Promoter -> MUST match promoterStoreId strictly!
-      if (isPromoter) {
-        if (ticket.storeId !== promoterStoreId) {
-          return false;
-        }
-      } else if (isAdmin && adminStoreFilter !== 'ALL') {
+      if (!isAdmin) {
+        const ownsTicket =
+          (ticket.eventId && ownedEventIds.has(ticket.eventId)) ||
+          (ticket.storeId && ownedStoreIds.has(ticket.storeId));
+        if (!ownsTicket) return false;
+      } else if (adminStoreFilter !== 'ALL') {
         if (ticket.storeId !== adminStoreFilter) {
           return false;
         }
@@ -131,13 +200,22 @@ export const CheckInPage: React.FC = () => {
         ticket.bandCode?.toLowerCase().includes(term) ||
         ticket.id?.toLowerCase().includes(term);
 
-      // 3. Status filter
+      // 3. Status filter (only paid & unused count as 'valid')
+      const paid = isTicketPaid(ticket);
       const currentAttendance: AttendanceStatus =
-        ticket.attendanceStatus || (ticket.status === 'used' ? 'INSIDE' : 'OUTSIDE');
+        ticket.attendanceStatus || (ticket.status === 'used' || (ticket.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
+      const alreadyUsed =
+        ticket.status === 'used' ||
+        (ticket.status as string) === 'inside' ||
+        currentAttendance === 'INSIDE' ||
+        currentAttendance === 'EXITED' ||
+        Boolean(ticket.checkedAt) ||
+        Boolean((ticket as any).checkedInAt) ||
+        (Array.isArray(ticket.attendanceLogs) && ticket.attendanceLogs.length > 0);
       const matchStatus =
         statusFilter === 'all' ||
-        (statusFilter === 'valid' && currentAttendance === 'OUTSIDE') ||
-        (statusFilter === 'used' && currentAttendance !== 'OUTSIDE');
+        (statusFilter === 'valid' && paid && !alreadyUsed) ||
+        (statusFilter === 'used' && paid && alreadyUsed);
 
       return matchSearch && matchStatus;
     });
@@ -148,8 +226,7 @@ export const CheckInPage: React.FC = () => {
     const term = searchTerm.trim().toLowerCase();
 
     return firestoreReservations.filter((res) => {
-      // Requirement 4: Promoter can ONLY see & collect at their own storeId!
-      if (isPromoter && res.storeId !== promoterStoreId) {
+      if (!isAdmin && (!res.storeId || !ownedStoreIds.has(res.storeId))) {
         return false;
       }
       if (isAdmin && adminStoreFilter !== 'ALL' && res.storeId !== adminStoreFilter) {
@@ -171,24 +248,41 @@ export const CheckInPage: React.FC = () => {
 
       return matchSearch && matchStatus;
     });
-  }, [firestoreReservations, searchTerm, isPromoter, promoterStoreId, isAdmin, adminStoreFilter, statusFilter]);
+  }, [firestoreReservations, searchTerm, isAdmin, ownedStoreIds, adminStoreFilter, statusFilter]);
 
   const stats = useMemo(() => {
-    const scopedTickets = isPromoter
-      ? tickets.filter((t) => t.storeId === promoterStoreId)
-      : adminStoreFilter === 'ALL'
-      ? tickets
-      : tickets.filter((t) => t.storeId === adminStoreFilter);
-
-    const total = scopedTickets.length;
-    let inside = 0;
-    let outside = 0;
-    scopedTickets.forEach((t) => {
-      const st: AttendanceStatus = t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
-      if (st === 'INSIDE') inside++;
-      else outside++;
+    const activeEventSet = new Set(events.map((e) => e.id));
+    const scopedTickets = tickets.filter((t) => {
+      if (isLegacyTestTicket(t, activeEventSet)) return false;
+      if (!isTicketPaid(t)) return false;
+      if (!isAdmin) {
+        return (
+          (t.eventId && ownedEventIds.has(t.eventId)) ||
+          (t.storeId && ownedStoreIds.has(t.storeId))
+        );
+      }
+      return adminStoreFilter === 'ALL' || t.storeId === adminStoreFilter;
     });
-    return { total, valid: outside, used: inside };
+
+    let total = 0;
+    let used = 0;
+    let valid = 0;
+    scopedTickets.forEach((t) => {
+      const qty = getTicketQuantity(t);
+      total += qty;
+      const st: AttendanceStatus = t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
+      const isUsed =
+        t.status === 'used' ||
+        (t.status as string) === 'inside' ||
+        st === 'INSIDE' ||
+        st === 'EXITED' ||
+        Boolean(t.checkedAt) ||
+        Boolean((t as any).checkedInAt) ||
+        (Array.isArray(t.attendanceLogs) && t.attendanceLogs.length > 0);
+      if (isUsed) used += qty;
+      else valid += qty;
+    });
+    return { total, valid, used };
   }, [tickets, isPromoter, promoterStoreId, adminStoreFilter]);
 
   const handlePerformCheckIn = async (ticket: Ticket) => {
@@ -516,18 +610,26 @@ export const CheckInPage: React.FC = () => {
               </h3>
               <p className="text-xs text-gray-400 max-w-xs mx-auto">
                 {isPromoter
-                  ? `If the customer bought a pass for another venue (e.g. Mphela Resort), it is strictly hidden from ${promoterStoreName}.`
-                  : `No pass matches query "${searchTerm}". Verify the 13-digit SA ID Number.`}
+                  ? `If the customer bought a pass for a different venue or event, it is strictly hidden from your gate scanner.`
+                  : `No pass matches query "${searchTerm}". Verify the ticket ID or phone number.`}
               </p>
             </div>
           ) : (
             <div className="space-y-3.5">
               {matchedTickets.map((ticket) => {
+                const paid = isTicketPaid(ticket);
                 const currentAttendance: AttendanceStatus =
-                  ticket.attendanceStatus || (ticket.status === 'used' ? 'INSIDE' : 'OUTSIDE');
+                  ticket.attendanceStatus || (ticket.status === 'used' || (ticket.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
                 const isInside = currentAttendance === 'INSIDE';
                 const isExited = currentAttendance === 'EXITED';
-                const isOutside = currentAttendance === 'OUTSIDE';
+                const alreadyUsed =
+                  ticket.status === 'used' ||
+                  (ticket.status as string) === 'inside' ||
+                  isInside ||
+                  isExited ||
+                  Boolean(ticket.checkedAt) ||
+                  Boolean((ticket as any).checkedInAt) ||
+                  (Array.isArray(ticket.attendanceLogs) && ticket.attendanceLogs.length > 0);
                 const displayName = ticket.attendeeName || ticket.customerName || 'Attendee';
                 const phoneDisplay = maskPhoneNumber(ticket.attendeePhone || ticket.customerPhone || '');
 
@@ -538,7 +640,7 @@ export const CheckInPage: React.FC = () => {
                   >
                     <div
                       className={`absolute top-0 left-0 right-0 h-1 ${
-                        isInside ? 'bg-emerald-400' : isExited ? 'bg-blue-400' : 'bg-gray-600'
+                        !paid ? 'bg-amber-400' : alreadyUsed ? 'bg-rose-500' : 'bg-emerald-400'
                       }`}
                     />
 
@@ -564,14 +666,14 @@ export const CheckInPage: React.FC = () => {
                           </h3>
                           <span
                             className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full border ${
-                              isInside
-                                ? 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40'
-                                : isExited
-                                ? 'bg-blue-950/80 text-blue-300 border-blue-500/40'
-                                : 'bg-zinc-800 text-gray-400 border-white/10'
+                              !paid
+                                ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                                : alreadyUsed
+                                ? 'bg-rose-950/80 text-rose-300 border-rose-500/40'
+                                : 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40'
                             }`}
                           >
-                            {currentAttendance}
+                            {!paid ? 'UNPAID' : alreadyUsed ? 'USED' : 'VALID'}
                           </span>
                         </div>
 
@@ -610,10 +712,8 @@ export const CheckInPage: React.FC = () => {
                           <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center gap-1.5 text-[10px] text-gray-400">
                             <Clock className="w-3 h-3 text-yellow-400" />
                             <span>
-                              {isInside
-                                ? `Inside since ${ticket.insideSince || ticket.lastMovementAt}`
-                                : isExited
-                                ? `Exited at ${ticket.exitedAt || ticket.lastMovementAt}`
+                              {alreadyUsed
+                                ? `Scanned at ${ticket.insideSince || ticket.lastMovementAt}`
                                 : `Created at ${ticket.createdAt?.slice(11, 16) || 'earlier'}`}
                             </span>
                           </div>
@@ -625,28 +725,22 @@ export const CheckInPage: React.FC = () => {
                       <div className="text-[11px] text-gray-400">
                         <span>Gate State: </span>
                         <strong className="text-white">
-                          {isInside ? 'Currently Inside' : isExited ? 'Exited (Re-entry Allowed)' : 'Outside Venue'}
+                          {!paid
+                            ? 'Waiting for Payment Approval'
+                            : alreadyUsed
+                            ? 'Already Scanned (Invalid)'
+                            : 'Valid for Entry'}
                         </strong>
                       </div>
 
-                      {isInside ? (
-                        <button
-                          type="button"
-                          onClick={() => handlePerformCheckOut(ticket)}
-                          className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-black font-extrabold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
-                        >
-                          <LogOut className="w-4 h-4 stroke-[2.5]" />
-                          <span>CHECK OUT</span>
-                        </button>
-                      ) : isExited ? (
-                        <button
-                          type="button"
-                          onClick={() => handlePerformCheckIn(ticket)}
-                          className="bg-blue-500 hover:bg-blue-400 active:scale-95 text-white font-extrabold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
-                        >
-                          <LogIn className="w-4 h-4 stroke-[2.5]" />
-                          <span>RE-ENTER</span>
-                        </button>
+                      {!paid ? (
+                        <span className="text-[10px] font-black uppercase px-3 py-1.5 rounded-xl bg-amber-500/15 text-amber-300 border border-amber-500/40">
+                          UNPAID
+                        </span>
+                      ) : alreadyUsed ? (
+                        <span className="text-[10px] font-black uppercase px-3 py-1.5 rounded-xl bg-rose-500/15 text-rose-300 border border-rose-500/40">
+                          ALREADY USED
+                        </span>
                       ) : (
                         <button
                           type="button"

@@ -8,6 +8,8 @@ import {
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { SpendingTransaction } from '../types';
+import { isTicketPaid } from '../utils/ticketStatus';
+import { doesUserPersonallyOwnTicket, isLegacyTestTicket } from '../utils/legacyCleanup';
 import {
   PieChart,
   Wallet,
@@ -114,15 +116,18 @@ export const EveryCentPage: React.FC = () => {
     return () => unsubscribe();
   }, [walletId]);
 
-  // 2. Synthesize all records into a single cent-accurate ledger
+  // 2. Synthesize all records strictly for the active user into a single cent-accurate ledger
   const allLedgerItems = useMemo(() => {
+    if (!walletId) return [];
+
     const combined: SpendingTransaction[] = [...firestoreTransactions];
     const existingIds = new Set(combined.map((t) => t.id));
 
-    // Local cached transactions
+    // Local cached transactions strictly owned by walletId
     try {
       const localSpending = JSON.parse(localStorage.getItem('ub_spending_history') || '[]');
       for (const item of localSpending) {
+        if (!item || item.userId !== walletId) continue;
         if (!existingIds.has(item.id)) {
           combined.push({
             id: item.id,
@@ -142,8 +147,11 @@ export const EveryCentPage: React.FC = () => {
       }
     } catch (e) {}
 
-    // Integrate tickets as ticket purchases
+    // Integrate PAID tickets personally purchased by currentUser only
     for (const t of tickets) {
+      if (isLegacyTestTicket(t)) continue;
+      if (!doesUserPersonallyOwnTicket(t, currentUser)) continue;
+      if (!isTicketPaid(t)) continue;
       const ticketTxId = `tx-ticket-${t.id}`;
       if (!existingIds.has(ticketTxId)) {
         const priceNum = parseFloat(t.price.replace(/[^\d.]/g, '')) || 0;
@@ -157,26 +165,27 @@ export const EveryCentPage: React.FC = () => {
           amount: priceNum,
           storeId: t.storeId,
           storeName: t.storeName,
-          paymentMethod: 'Wallet',
+          paymentMethod: t.payshapReference ? 'PayShap' : 'Wallet',
           status: (t.status === 'valid' || t.status === 'Valid') ? 'Paid' : 'Used',
           reference: t.ticketId || t.bandCode,
           timestamp: null,
-          createdAt: t.createdAt || t.purchaseDate || new Date().toISOString(),
+          createdAt: t.paidAt || t.createdAt || t.purchaseDate || new Date().toISOString(),
         });
         existingIds.add(ticketTxId);
       }
     }
 
-    // Integrate wallet top-ups
+    // Integrate wallet top-ups belonging to this user
     for (const wt of walletTransactions) {
+      if (wt.userId && wt.userId !== walletId) continue;
       const wtId = wt.id || `tx-topup-${wt.date}`;
       if (!existingIds.has(wtId)) {
         combined.push({
           id: wtId,
           userId: walletId,
-          type: 'topup',
+          type: wt.type === 'refund' ? 'refund' : wt.type === 'purchase' ? 'food' : 'topup',
           description: wt.title || 'Wallet Top-Up',
-          amount: wt.amount,
+          amount: Math.abs(wt.amount),
           paymentMethod: wt.subtitle?.includes('Card') ? 'Card' : 'OneVoucher',
           status: 'Paid',
           reference: wt.reference,
@@ -195,7 +204,7 @@ export const EveryCentPage: React.FC = () => {
     });
 
     return combined;
-  }, [firestoreTransactions, tickets, walletTransactions, walletId]);
+  }, [firestoreTransactions, tickets, walletTransactions, walletId, currentUser]);
 
   // 3. Cent-by-Cent Financial Calculations
   const totalInflow = useMemo(() => {
@@ -278,7 +287,7 @@ export const EveryCentPage: React.FC = () => {
     const map: Record<string, { amount: number; count: number }> = {};
 
     for (const item of spendItems) {
-      const v = item.storeName || 'Florence Palm';
+      const v = item.storeName || 'Universal Band Mall';
       if (!map[v]) map[v] = { amount: 0, count: 0 };
       map[v].amount += Math.abs(item.amount);
       map[v].count += 1;
@@ -358,7 +367,7 @@ export const EveryCentPage: React.FC = () => {
         `"${tx.reference || tx.id}"`,
         `"${tx.type.toUpperCase()}"`,
         `"${(tx.description || '').replace(/"/g, '""')}"`,
-        `"${(tx.storeName || 'Florence Palm').replace(/"/g, '""')}"`,
+        `"${(tx.storeName || 'Universal Band Mall').replace(/"/g, '""')}"`,
         `"${tx.paymentMethod}"`,
         isInflow ? `R${tx.amount.toFixed(2)}` : 'R0.00',
         !isInflow ? `R${tx.amount.toFixed(2)}` : 'R0.00',
@@ -672,7 +681,7 @@ export const EveryCentPage: React.FC = () => {
                       <div className="flex items-center gap-1.5 text-[10px] text-gray-400 mt-0.5">
                         <span className="font-mono">{dateStr}</span>
                         <span>•</span>
-                        <span className="text-gray-300 font-semibold">{item.storeName || 'Florence Palm'}</span>
+                        <span className="text-gray-300 font-semibold">{item.storeName || 'Universal Band Mall'}</span>
                       </div>
                     </div>
                   </div>
@@ -743,7 +752,7 @@ export const EveryCentPage: React.FC = () => {
             <div className="bg-black/60 rounded-2xl p-3.5 border border-white/5 space-y-2 text-xs font-mono mb-4">
               <div className="flex justify-between">
                 <span className="text-gray-400 font-sans">Venue:</span>
-                <span className="text-white font-bold">{selectedReceiptTx.storeName || 'Florence Palm'}</span>
+                <span className="text-white font-bold">{selectedReceiptTx.storeName || 'Universal Band Mall'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400 font-sans">Payment Method:</span>

@@ -49,7 +49,7 @@ export const FoodMenuPage: React.FC = () => {
           <span>Store-Scoped Reservation Policy</span>
         </div>
         <p className="text-[11px] text-gray-400 leading-relaxed">
-          To ensure accurate preparation, you reserve directly inside each venue page. Orders made for <strong>Florence Palm</strong> can only be collected at Florence Palm; orders for <strong>Mphela Resort</strong> can only be collected at Mphela Resort.
+          To ensure accurate preparation, you reserve directly inside each venue page. Orders made inside a specific store or event vendor menu can only be collected from that exact venue.
         </p>
       </div>
 

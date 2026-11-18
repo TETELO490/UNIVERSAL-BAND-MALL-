@@ -13,10 +13,20 @@ export const AddMenuItemModal: React.FC<AddMenuItemModalProps> = ({ type, onClos
   const { addMenuItem, selectedStoreId, currentUser } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const isOrganizerRole =
+    roleLower === 'promoter' ||
+    roleLower === 'event organiser' ||
+    roleLower === 'organizer' ||
+    roleLower === 'seller' ||
+    roleLower === 'vendor' ||
+    roleLower === 'store manager' ||
+    roleLower === 'manager';
+
   const targetStoreId =
-    currentUser.role === 'Promoter'
-      ? currentUser.assignedStoreId || ''
-      : selectedStoreId || '';
+    (isOrganizerRole
+      ? currentUser?.assignedStoreId || selectedStoreId || (currentUser?.id && currentUser.id !== 'guest_user' ? `org_${currentUser.id}` : '')
+      : selectedStoreId || currentUser?.assignedStoreId || '');
 
   const [name, setName] = useState('');
   const [price, setPrice] = useState(type === 'food' ? 'R50' : type === 'alcohol' ? 'R40' : 'R20');

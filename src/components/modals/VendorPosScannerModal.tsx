@@ -17,6 +17,10 @@ import { searchCustomerByIdOrPhone } from '../../utils/customerDirectory';
 import { parseCustomerQrScan } from '../../utils/customerQr';
 import confetti from 'canvas-confetti';
 import { ensureCameraPermission } from '../../utils/nativePermissions';
+import {
+  getUserOwnedStoreIds,
+  isUserVerifiedAdminSession,
+} from '../../utils/legacyCleanup';
 
 interface VendorPosScannerModalProps {
   isOpen: boolean;
@@ -28,7 +32,20 @@ export const VendorPosScannerModal: React.FC<VendorPosScannerModalProps> = ({ is
     currentUser,
     deductVendorSale,
     liveSales,
+    stores,
   } = useApp();
+
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const ownedStoreIds = getUserOwnedStoreIds(currentUser, stores);
+  const uid = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
+  const primaryVendorStoreId = currentUser?.assignedStoreId || (uid ? Array.from(ownedStoreIds)[0] || '' : '');
+  const scopedLiveSales = isVerifiedAdmin
+    ? liveSales
+    : !uid
+    ? []
+    : liveSales.filter(
+        (sale) => sale.vendorId === uid || (sale.storeId ? ownedStoreIds.has(sale.storeId) : false)
+      );
 
   const [activeTab, setActiveTab] = useState<'scan' | 'recent_sales'>('scan');
   const [scannerId] = useState(() => `vendor-qr-reader-${Math.random().toString(36).substring(2, 8)}`);
@@ -257,6 +274,8 @@ export const VendorPosScannerModal: React.FC<VendorPosScannerModalProps> = ({ is
       amount: amt,
       itemName: selectedItemName,
       vendorName: currentUser.name || 'Vendor Bar POS',
+      storeId: primaryVendorStoreId,
+      storeName: currentUser.assignedStoreName || stores.find((s) => s.id === primaryVendorStoreId)?.name || 'Venue Bar POS',
     });
 
     setIsDeducting(false);
@@ -351,7 +370,7 @@ export const VendorPosScannerModal: React.FC<VendorPosScannerModalProps> = ({ is
             }`}
           >
             <TrendingUp className="w-3.5 h-3.5" />
-            <span>Live Sales Feed ({liveSales.length})</span>
+            <span>Live Sales Feed ({scopedLiveSales.length})</span>
           </button>
         </div>
 
@@ -590,12 +609,12 @@ export const VendorPosScannerModal: React.FC<VendorPosScannerModalProps> = ({ is
                 </span>
               </div>
 
-              {liveSales.length === 0 ? (
+              {scopedLiveSales.length === 0 ? (
                 <div className="p-6 text-center bg-black/40 rounded-2xl border border-white/5 text-gray-500 text-xs">
                   No vendor sales recorded yet. Tap "Scan & Deduct" to deduct R30 beer!
                 </div>
               ) : (
-                liveSales.map((sale) => (
+                scopedLiveSales.map((sale) => (
                   <div
                     key={sale.id}
                     className="bg-[#121212] p-3 rounded-2xl border border-white/5 flex items-center justify-between"

@@ -5,6 +5,7 @@ import {
   Calendar,
   MapPin,
   CheckCircle,
+  CheckCircle2,
   ShieldCheck,
   Download,
   Copy,
@@ -13,34 +14,88 @@ import {
   AlertCircle,
   Utensils,
   Clock,
+  Zap,
 } from 'lucide-react';
 import { maskPhoneNumber } from '../../utils/attendanceService';
 import { getEventPayshapReference, isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
+import {
+  doesUserPersonallyOwnTicket,
+  getUserOwnedEventIds,
+  getUserOwnedStoreIds,
+  isUserVerifiedAdminSession,
+} from '../../utils/legacyCleanup';
+import { normalizePhoneDigits } from '../../utils/customerQr';
 
 export const TicketDetailModal: React.FC = () => {
   const {
     selectedTicket: rawSelectedTicket,
+    currentUser,
     setActiveModal,
     setSelectedTicket,
     stores,
     events,
     tickets,
+    mallOrders,
     openEventFoodPreorder,
     tymebankPayshapNumber,
     navigateTo,
+    adminApproveTicketPayment,
   } = useApp();
   const [copied, setCopied] = useState<boolean>(false);
   const [copiedRef, setCopiedRef] = useState<boolean>(false);
+  const [copiedPayfastRef, setCopiedPayfastRef] = useState<boolean>(false);
   const [copiedNumber, setCopiedNumber] = useState<boolean>(false);
   const [phoneTapActive, setPhoneTapActive] = useState<boolean>(false);
   const [nfcWriteStatus, setNfcWriteStatus] = useState<string>('');
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
+  const [approvingTicket, setApprovingTicket] = useState<boolean>(false);
 
   if (!rawSelectedTicket) return null;
 
   const selectedTicket =
     tickets.find((t) => t.id === rawSelectedTicket.id || t.ticketId === rawSelectedTicket.id) ||
     rawSelectedTicket;
+
+  const isPersonalTicket = doesUserPersonallyOwnTicket(selectedTicket, currentUser);
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const ownedEventIds = getUserOwnedEventIds(currentUser, events, stores);
+  const ownedStoreIds = getUserOwnedStoreIds(currentUser, stores);
+  const canOrganizerInspect =
+    (selectedTicket.eventId && ownedEventIds.has(selectedTicket.eventId)) ||
+    (selectedTicket.storeId && ownedStoreIds.has(selectedTicket.storeId));
+
+  if (!isPersonalTicket && !isVerifiedAdmin && !canOrganizerInspect) {
+    return null;
+  }
+
+  const tPhoneDigits = normalizePhoneDigits(selectedTicket.attendeePhone || selectedTicket.customerPhone || '');
+  const linkedPreorderOrder =
+    mallOrders.find(
+      (o) =>
+        o.status !== 'cancelled' &&
+        (o.id === selectedTicket.preorderOrderId ||
+          (selectedTicket.eventId &&
+            o.eventId === selectedTicket.eventId &&
+            ((selectedTicket.userId && o.customerId === selectedTicket.userId) ||
+              (selectedTicket.customerQrId && o.customerQrId === selectedTicket.customerQrId) ||
+              (tPhoneDigits.length >= 7 && normalizePhoneDigits(o.customerPhone) === tPhoneDigits))))
+    ) || null;
+  const resolvedPreorderSummary =
+    selectedTicket.preorderSummary ||
+    (linkedPreorderOrder
+      ? linkedPreorderOrder.items.map((it) => `${it.quantity}× ${it.name}`).join(', ')
+      : '');
+  const hasResolvedPreorder = Boolean(selectedTicket.hasFoodPreorder || resolvedPreorderSummary);
+
+  const isPaidPass = isTicketPaid(selectedTicket);
+  const isAlreadyScanned =
+    selectedTicket.status === 'used' ||
+    (selectedTicket.status as string) === 'inside' ||
+    selectedTicket.attendanceStatus === 'INSIDE' ||
+    selectedTicket.attendanceStatus === 'EXITED' ||
+    Boolean(selectedTicket.checkedAt) ||
+    Boolean((selectedTicket as any).checkedInAt) ||
+    (Array.isArray(selectedTicket.attendanceLogs) && selectedTicket.attendanceLogs.length > 0);
 
   // Accurately resolve event location from ticket, store, or event
   const resolvedLocation =
@@ -50,9 +105,27 @@ export const TicketDetailModal: React.FC = () => {
     selectedTicket.storeName ||
     'Venue Location';
 
+  const isPayFastPayment =
+    selectedTicket.paymentMethod === 'PayFast' ||
+    Boolean(selectedTicket.payfastReference) ||
+    String(selectedTicket.payshapReference || '').startsWith('PF-');
+
+  const resolvedPayfastRef =
+    selectedTicket.payfastReference ||
+    (String(selectedTicket.payshapReference || '').startsWith('PF-')
+      ? selectedTicket.payshapReference
+      : '');
+
   const resolvedPayshapRef =
     selectedTicket.payshapReference ||
     getEventPayshapReference(selectedTicket.eventTitle || selectedTicket.eventName);
+
+  const canAdminApprove =
+    isVerifiedAdmin ||
+    canOrganizerInspect ||
+    currentUser.role === 'admin' ||
+    currentUser.role === 'promoter' ||
+    currentUser.email === 'tetelophokwane98@gmail.com';
 
   const handleCopyPayshapRef = () => {
     if (!resolvedPayshapRef) return;
@@ -61,10 +134,27 @@ export const TicketDetailModal: React.FC = () => {
     setTimeout(() => setCopiedRef(false), 2500);
   };
 
+  const handleCopyPayfastRef = () => {
+    const text = resolvedPayfastRef || selectedTicket.payshapReference;
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setCopiedPayfastRef(true);
+    setTimeout(() => setCopiedPayfastRef(false), 2500);
+  };
+
   const handleCopyPayshapNum = () => {
     navigator.clipboard?.writeText(tymebankPayshapNumber);
     setCopiedNumber(true);
     setTimeout(() => setCopiedNumber(false), 2500);
+  };
+
+  const handleAdminBackupApprove = async () => {
+    setApprovingTicket(true);
+    try {
+      await adminApproveTicketPayment(selectedTicket.id || selectedTicket.ticketId);
+    } finally {
+      setApprovingTicket(false);
+    }
   };
 
   const handleStartPhoneToPhoneTap = async () => {
@@ -200,56 +290,112 @@ export const TicketDetailModal: React.FC = () => {
               </div>
             </div>
 
-            {/* PayShap Payment Status & Instructions */}
+            {/* Payment Status & Instructions */}
             {isTicketWaitingPayment(selectedTicket) && (
-              <div className="bg-amber-950/60 border border-amber-500/40 rounded-xl p-3 space-y-2">
+              <div className="bg-amber-950/60 border border-amber-500/40 rounded-xl p-3 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-black uppercase text-amber-300 tracking-wider flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5" />
-                    <span>WAITING FOR PAYMENT</span>
+                    <span>AWAITING FOR PAYMENT</span>
                   </span>
                   <span className="text-[10px] font-black text-amber-200 tabular-nums">{selectedTicket.price}</span>
                 </div>
-                {selectedTicket.payshapRequestSent && (
-                  <div className="bg-amber-500/20 border border-amber-400/50 rounded-lg px-2.5 py-2 text-[11px] font-bold text-amber-200">
-                    Request Sent - Waiting for customer to approve in their bank app
+
+                {isPayFastPayment ? (
+                  /* PayFast Specific Details */
+                  <div className="space-y-2">
+                    <div className="bg-black/60 p-2.5 rounded-lg border border-[#FACC15]/40 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="text-[9px] text-gray-400 block font-semibold flex items-center gap-1">
+                          <Zap className="w-3 h-3 text-[#FACC15]" /> PayFast Reference Code
+                        </span>
+                        <span className="font-mono font-black text-[#FACC15] text-xs break-all">
+                          {resolvedPayfastRef || selectedTicket.payshapReference || selectedTicket.bandCode}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopyPayfastRef}
+                        className="text-[10px] bg-[#FACC15] text-black font-black px-2.5 py-1 rounded flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        {copiedPayfastRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedPayfastRef ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                    <div className="bg-white/5 p-2 rounded-lg text-[10px] text-gray-300 flex items-center justify-between">
+                      <span className="text-gray-400">Payment Gateway:</span>
+                      <span className="font-bold text-white">PayFast (Card / Instant EFT / Scan)</span>
+                    </div>
+                    <p className="text-[10px] text-amber-200/90 leading-snug">
+                      The app is checking for the PayFast payment confirmation message on its own to automatically approve your ticket.
+                    </p>
+                  </div>
+                ) : (
+                  /* PayShap Specific Details */
+                  <div className="space-y-2">
+                    {selectedTicket.payshapRequestSent && (
+                      <div className="bg-amber-500/20 border border-amber-400/50 rounded-lg px-2.5 py-2 text-[11px] font-bold text-amber-200">
+                        Request Sent - Waiting for customer to approve in their bank app
+                      </div>
+                    )}
+                    <div className="bg-black/60 p-2 rounded-lg border border-white/10 flex items-center justify-between">
+                      <div>
+                        <span className="text-[9px] text-gray-400 block">PayShap ID / TymeBank Cell</span>
+                        <span className="font-mono font-bold text-white text-xs">{tymebankPayshapNumber}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopyPayshapNum}
+                        className="text-[10px] bg-white/10 hover:bg-white/20 text-white px-2 py-1 rounded flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedNumber ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedNumber ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                    {resolvedPayshapRef && (
+                      <div className="bg-black/60 p-2 rounded-lg border border-[#FACC15]/40 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-[9px] text-gray-400 block">Required PayShap Reference</span>
+                          <span className="font-mono font-black text-[#FACC15] text-xs break-all">
+                            {resolvedPayshapRef}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleCopyPayshapRef}
+                          className="text-[10px] bg-[#FACC15] text-black font-black px-2 py-1 rounded flex items-center gap-1 shrink-0 cursor-pointer"
+                        >
+                          {copiedRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedRef ? 'Copied' : 'Copy Ref'}</span>
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-amber-200/90 leading-snug">
+                      Pay from your bank app (Capitec, FNB, Nedbank, Standard Bank) or approve the PayShap Request. TymeBank SMS confirms it automatically.
+                    </p>
                   </div>
                 )}
-                <div className="bg-black/60 p-2 rounded-lg border border-white/10 flex items-center justify-between">
-                  <div>
-                    <span className="text-[9px] text-gray-400 block">PayShap ID / TymeBank Cell</span>
-                    <span className="font-mono font-bold text-white text-xs">{tymebankPayshapNumber}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleCopyPayshapNum}
-                    className="text-[10px] bg-white/10 hover:bg-white/20 text-white px-2 py-1 rounded flex items-center gap-1 cursor-pointer"
-                  >
-                    {copiedNumber ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedNumber ? 'Copied' : 'Copy'}</span>
-                  </button>
-                </div>
-                {resolvedPayshapRef && (
-                  <div className="bg-black/60 p-2 rounded-lg border border-[#FACC15]/40 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <span className="text-[9px] text-gray-400 block">Required PayShap Reference</span>
-                      <span className="font-mono font-black text-[#FACC15] text-xs break-all">
-                        {resolvedPayshapRef}
+
+                {/* ADMIN MANUAL BACKUP APPROVAL ACCESS */}
+                {canAdminApprove && (
+                  <div className="pt-2.5 border-t border-amber-500/30 space-y-2">
+                    <div className="flex items-center justify-between text-[10px] font-black uppercase text-emerald-400">
+                      <span className="flex items-center gap-1">
+                        <ShieldCheck className="w-3.5 h-3.5" /> Admin / Organiser Manual Backup
                       </span>
+                      <span className="text-gray-400 font-normal">Direct Override</span>
                     </div>
                     <button
                       type="button"
-                      onClick={handleCopyPayshapRef}
-                      className="text-[10px] bg-[#FACC15] text-black font-black px-2 py-1 rounded flex items-center gap-1 shrink-0 cursor-pointer"
+                      disabled={approvingTicket}
+                      onClick={handleAdminBackupApprove}
+                      className="w-full min-h-[44px] bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-black font-black text-xs rounded-xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-500/20 transition cursor-pointer disabled:opacity-50"
                     >
-                      {copiedRef ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                      <span>{copiedRef ? 'Copied' : 'Copy Ref'}</span>
+                      <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
+                      <span>{approvingTicket ? 'Approving Payment...' : 'Approve Payment (Admin Backup)'}</span>
                     </button>
                   </div>
                 )}
-                <p className="text-[10px] text-amber-200/90 leading-snug">
-                  Pay from your bank app (Capitec, FNB, Nedbank, Standard Bank) or approve the PayShap Request in your bank app. An administrator will verify your payment and mark this ticket as PAID ✅.
-                </p>
               </div>
             )}
 
@@ -286,23 +432,40 @@ export const TicketDetailModal: React.FC = () => {
             </div>
 
             {/* MODE 2: EVENT FOOD PRE-ORDER STATUS / UNLOCK BUTTON */}
-            {selectedTicket.hasFoodPreorder || selectedTicket.preorderSummary ? (
+            {hasResolvedPreorder ? (
               <div className="bg-gradient-to-r from-purple-950/80 via-indigo-950/80 to-purple-900/80 border border-purple-500/50 rounded-xl p-3 text-xs space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-black uppercase text-purple-300 tracking-wider flex items-center gap-1">
                     <Utensils className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Event Food Pre-Ordered 🍔🥤</span>
+                    <span>{isPersonalTicket ? 'Event Food Pre-Ordered 🍔🥤' : 'Customer Pre-Ordered Food 🍔🥤'}</span>
                   </span>
                   <span className="bg-emerald-500 text-black font-black text-[9px] px-1.5 py-0.2 rounded uppercase">
                     Paid
                   </span>
                 </div>
                 <p className="text-white font-bold text-xs">
-                  {selectedTicket.preorderSummary}
+                  {resolvedPreorderSummary}
                 </p>
+                {linkedPreorderOrder && (
+                  <p className="text-[10px] text-purple-200 font-semibold">
+                    Order #{linkedPreorderOrder.orderNumber} • Total R{Number(linkedPreorderOrder.total || 0).toFixed(2)} • Status: {linkedPreorderOrder.status}
+                  </p>
+                )}
                 <p className="text-[10px] text-gray-300">
-                  Vendor will verify your pre-ordered meals when scanning this pass.
+                  {isPersonalTicket
+                    ? 'Vendor will verify your pre-ordered meals when scanning this pass.'
+                    : 'Scan Customer ONE QR on handover to release this food/drink pre-order.'}
                 </p>
+              </div>
+            ) : !isPersonalTicket ? (
+              <div className="w-full py-2.5 px-3.5 bg-zinc-800/80 text-gray-300 font-semibold text-xs rounded-xl border border-white/10 flex items-center gap-2">
+                <Utensils className="w-4 h-4 shrink-0 text-gray-400" />
+                <span>Attendee has not placed an event food/drink pre-order yet.</span>
+              </div>
+            ) : !isPaidPass ? (
+              <div className="w-full py-2.5 px-3.5 bg-zinc-800/80 text-amber-300 font-bold text-xs rounded-xl border border-amber-500/30 flex items-center justify-center gap-2">
+                <Clock className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>Food pre-order unlocks after ticket payment is approved</span>
               </div>
             ) : (
               <button
@@ -360,24 +523,38 @@ export const TicketDetailModal: React.FC = () => {
           </div>
 
           {/* Linked to Profile ONE QR */}
-          <div className="bg-black/40 border border-[#FACC15]/30 rounded-2xl p-3.5 my-2 text-center space-y-2.5">
-            <p className="text-xs font-bold text-white">
-              This ticket is linked to your permanent Profile ONE QR.
-            </p>
-            <p className="text-[11px] text-gray-400">
-              Show your ONE QR on the Profile tab at the gate — ID: <span className="font-mono text-[#FACC15]">{selectedTicket.id}</span>
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                closeModal();
-                navigateTo('/profile');
-              }}
-              className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs transition cursor-pointer"
-            >
-              Open My ONE QR on Profile
-            </button>
-          </div>
+          {isPersonalTicket && (
+            <div className="bg-black/40 border border-[#FACC15]/30 rounded-2xl p-3.5 my-2 text-center space-y-2.5">
+              {isAlreadyScanned ? (
+                <p className="text-xs font-black text-rose-400">
+                  Single-Use Ticket Already Scanned ({selectedTicket.attendanceStatus || 'USED'}). No re-entry allowed.
+                </p>
+              ) : !isPaidPass ? (
+                <p className="text-xs font-bold text-amber-300">
+                  Gate pass locked — awaiting payment approval before ONE QR activation.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs font-bold text-white">
+                    This single-use ticket is linked to your permanent Profile ONE QR.
+                  </p>
+                  <p className="text-[11px] text-gray-400">
+                    Show your ONE QR on the Profile tab at the gate — ID: <span className="font-mono text-[#FACC15]">{selectedTicket.id}</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeModal();
+                      navigateTo('/profile');
+                    }}
+                    className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs transition cursor-pointer"
+                  >
+                    Open My ONE QR on Profile
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Barcode visual */}
           <div className="h-7 w-full flex items-center justify-center gap-0.5 mt-2 bg-white/5 py-1 px-3 rounded">
@@ -393,17 +570,26 @@ export const TicketDetailModal: React.FC = () => {
           </div>
         </div>
 
-        {/* PHONE-TO-PHONE TAP: "Tap to Enter - Show My Pass" */}
-        <div className="mt-4 space-y-2">
-          <button
-            type="button"
-            onClick={handleStartPhoneToPhoneTap}
-            className="w-full py-3.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 cursor-pointer"
-          >
-            <Smartphone className="w-4 h-4 stroke-[2.5]" />
-            <span>Tap to Enter - Show My Pass</span>
-          </button>
-        </div>
+        {/* PHONE-TO-PHONE TAP: "Tap to Enter - Show My Pass" (personal ticket holder only) */}
+        {isPersonalTicket && (
+          <div className="mt-4 space-y-2">
+            <button
+              type="button"
+              disabled={!isPaidPass || isAlreadyScanned}
+              onClick={handleStartPhoneToPhoneTap}
+              className="w-full py-3.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-gray-400 active:scale-95 text-black font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:shadow-none cursor-pointer disabled:cursor-not-allowed"
+            >
+              <Smartphone className="w-4 h-4 stroke-[2.5]" />
+              <span>
+                {isAlreadyScanned
+                  ? 'Pass Already Used (Single-Use Scanned)'
+                  : !isPaidPass
+                  ? 'Gate Pass Locked Until Payment Approved'
+                  : 'Tap to Enter - Show My Pass'}
+              </span>
+            </button>
+          </div>
+        )}
 
         {/* PHONE-TO-PHONE TAP ACTIVE MODAL */}
         {phoneTapActive && (

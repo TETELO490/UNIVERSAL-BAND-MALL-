@@ -42,14 +42,19 @@ export const Header: React.FC = () => {
     (currentUser?.isRegistered && currentUser?.id !== 'guest_user')
   );
 
+  const roleLower = (currentUser?.role || '').toLowerCase();
   const isAdmin = Boolean(
     isLoggedIn &&
-    (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+    (roleLower === 'admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
     localStorage.getItem('ub_admin_session') === 'true' &&
     sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
   );
-  const isPromoter = isLoggedIn && currentUser?.role === 'Promoter';
-  const isWorker = isLoggedIn && (currentUser?.role === 'Worker' || currentUser?.role === 'Staff');
+  const isPromoter =
+    isLoggedIn &&
+    (roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer');
+  const isWorker =
+    isLoggedIn &&
+    (roleLower === 'worker' || roleLower === 'staff' || roleLower === 'shop worker' || roleLower === 'manager' || roleLower === 'store manager');
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

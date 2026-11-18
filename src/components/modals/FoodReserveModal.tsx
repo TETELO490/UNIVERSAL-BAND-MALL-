@@ -189,10 +189,11 @@ export const FoodReserveModal: React.FC<FoodReserveModalProps> = ({
           createdAt: new Date().toISOString(),
         });
 
-        // Local cache of spending transactions
+        // Local cache of spending transactions (strictly scoped by userId)
         const existingTx = JSON.parse(localStorage.getItem('ub_spending_history') || '[]');
         existingTx.unshift({
           id: txRef.id,
+          userId: currentUser.id,
           date: new Date().toISOString(),
           type: item.category === 'drink' ? 'drink' : 'food',
           description: `Reserved ${quantity}x ${item.name} at ${store.name}`,

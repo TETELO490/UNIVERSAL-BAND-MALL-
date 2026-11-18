@@ -38,7 +38,7 @@ import { VendorPosScannerModal } from './VendorPosScannerModal';
 import { TymebankSmsModal } from './TymebankSmsModal';
 import { SendPayshapRequestModal } from './SendPayshapRequestModal';
 import { maskPhoneNumber, normalizePhone } from '../../utils/attendanceService';
-import { getEventTicketStats } from '../../utils/eventTicketLimit';
+import { getEventTicketStats, getTicketQuantity } from '../../utils/eventTicketLimit';
 import { isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
 import { AttendanceStatus, Ticket } from '../../types';
 import { EventQrShareCard } from '../events/EventQrShareCard';
@@ -76,7 +76,9 @@ export const AdminConsoleModal: React.FC = () => {
     sendAdminSupportReply,
     markChatAsReadByAdmin,
     approveTicketManuallyFromChat,
+    adminApproveTicketPayment,
     rejectTicketFromChat,
+    purgeTestDataForGoLive,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'PENDING_APPROVALS' | 'LIVE_EVENTS' | 'LIVE_SALES' | 'USERS_LIST' | 'STORES' | 'STAFF_WORKERS' | 'TICKETS' | 'PHONE_TRACKER' | 'SUPPORT_INBOX'>('LIVE_EVENTS');
@@ -106,6 +108,8 @@ export const AdminConsoleModal: React.FC = () => {
   const [isVendorPosOpen, setIsVendorPosOpen] = useState<boolean>(false);
   const [isSmsModalOpen, setIsSmsModalOpen] = useState<boolean>(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [confirmGoLivePurge, setConfirmGoLivePurge] = useState<boolean>(false);
+  const [isPurgingGoLive, setIsPurgingGoLive] = useState<boolean>(false);
 
   const handleClose = () => {
     setActiveModal(null);
@@ -143,17 +147,18 @@ export const AdminConsoleModal: React.FC = () => {
   // Admin dashboard shows total INSIDE count per event in real-time.
   const eventAttendanceStats = useMemo(() => {
     return events.map((ev) => {
-      const evTickets = tickets.filter((t) => t.eventId === ev.id);
+      const evTickets = tickets.filter((t) => t.eventId === ev.id && isTicketPaid(t));
       let inside = 0;
       let outside = 0;
       let exited = 0;
 
       evTickets.forEach((t) => {
+        const qty = getTicketQuantity(t);
         const status: AttendanceStatus =
-          t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
-        if (status === 'INSIDE') inside++;
-        else if (status === 'EXITED') exited++;
-        else outside++;
+          t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
+        if (status === 'INSIDE') inside += qty;
+        else if (status === 'EXITED') exited += qty;
+        else outside += qty;
       });
 
       const hostStore = stores.find((s) => s.id === ev.storeId);
@@ -441,6 +446,56 @@ export const AdminConsoleModal: React.FC = () => {
               Ticket Song
             </span>
           </button>
+        </div>
+
+        {/* Go-Live Purge Legacy / Test Data Action */}
+        <div className="mb-2.5 p-2 rounded-xl bg-rose-950/30 border border-rose-500/30 flex items-center justify-between gap-2 shrink-0">
+          <div className="min-w-0">
+            <span className="text-[10px] font-black text-rose-300 block truncate">
+              Go-Live Hygiene: Purge Legacy & Expired Test Data
+            </span>
+            <span className="text-[9px] text-gray-400 block truncate">
+              Deletes old test tickets, expired test events & seed venues from Firestore
+            </span>
+          </div>
+          {!confirmGoLivePurge ? (
+            <button
+              type="button"
+              onClick={() => setConfirmGoLivePurge(true)}
+              className="px-2.5 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 font-black text-[10px] transition shrink-0 cursor-pointer"
+            >
+              Clean Test Data
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                disabled={isPurgingGoLive}
+                onClick={async () => {
+                  setIsPurgingGoLive(true);
+                  const res = await purgeTestDataForGoLive();
+                  setIsPurgingGoLive(false);
+                  setConfirmGoLivePurge(false);
+                  setActionMsg(
+                    res.deletedCount > 0
+                      ? `Go-Live Clean complete: removed ${res.deletedCount} legacy/expired test records from Firestore.`
+                      : 'Database is already clean — 0 legacy test records found.'
+                  );
+                  setTimeout(() => setActionMsg(null), 5000);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black text-[10px] transition cursor-pointer disabled:opacity-50"
+              >
+                {isPurgingGoLive ? 'Cleaning...' : 'Confirm Purge'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmGoLivePurge(false)}
+                className="px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-gray-300 font-bold text-[10px] transition cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
 
         {/* TABS BAR (Right at top below quick actions) */}
@@ -1549,7 +1604,7 @@ export const AdminConsoleModal: React.FC = () => {
             </div>
 
             {stores.map((s) => {
-              const storeTickets = tickets.filter((t) => t.storeId === s.id);
+              const storeTickets = tickets.filter((t) => t.storeId === s.id && isTicketPaid(t));
               const assignedPromoter = promoters.find((p) => p.storeId === s.id);
 
               return (
@@ -1687,7 +1742,7 @@ export const AdminConsoleModal: React.FC = () => {
                       type="text"
                       name="adminStaffName"
                       required
-                      placeholder="e.g. Thabo Mokoena"
+                      placeholder="e.g. Staff Member Name"
                       className="w-full bg-[#1C1C1C] border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-bold focus:outline-none focus:border-[#FACC15]"
                     />
                   </div>
@@ -1697,7 +1752,7 @@ export const AdminConsoleModal: React.FC = () => {
                       type="email"
                       name="adminStaffEmail"
                       required
-                      placeholder="thabo@ubmall.co.za"
+                      placeholder="staff@ubmall.co.za"
                       className="w-full bg-[#1C1C1C] border border-white/20 rounded-xl px-2.5 py-2 text-white text-xs font-bold focus:outline-none focus:border-[#FACC15]"
                     />
                   </div>
@@ -1943,14 +1998,30 @@ export const AdminConsoleModal: React.FC = () => {
                       )}
 
                       {waiting && (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedPayshapTicket(t)}
-                          className="w-full min-h-[44px] bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition"
-                        >
-                          <Send className="w-3.5 h-3.5 stroke-[2.5]" />
-                          <span>Send PayShap Request to Customer</span>
-                        </button>
+                        <div className="space-y-1.5">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const res = await adminApproveTicketPayment(t.id || t.ticketId);
+                              if (res.success) {
+                                setActionMsg(`Approved ticket #${t.bandCode || t.id} as PAID ✅`);
+                                setTimeout(() => setActionMsg(null), 4000);
+                              }
+                            }}
+                            className="w-full min-h-[44px] bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-black font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition shadow-sm"
+                          >
+                            <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
+                            <span>Approve Payment (Admin Backup)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPayshapTicket(t)}
+                            className="w-full min-h-[40px] bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition"
+                          >
+                            <Send className="w-3.5 h-3.5 stroke-[2.5]" />
+                            <span>Send PayShap Request to Customer</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -1995,8 +2066,17 @@ export const AdminConsoleModal: React.FC = () => {
 
               {matchedPhoneTickets.map((t) => {
                 const status: AttendanceStatus =
-                  t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
+                  t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
                 const isInside = status === 'INSIDE';
+                const paid = isTicketPaid(t);
+                const alreadyUsed =
+                  t.status === 'used' ||
+                  (t.status as string) === 'inside' ||
+                  status === 'INSIDE' ||
+                  status === 'EXITED' ||
+                  Boolean(t.checkedAt) ||
+                  Boolean((t as any).checkedInAt) ||
+                  (Array.isArray(t.attendanceLogs) && t.attendanceLogs.length > 0);
 
                 return (
                   <div
@@ -2021,25 +2101,30 @@ export const AdminConsoleModal: React.FC = () => {
                       <span>Pass: {t.ticketId || t.bandCode}</span>
                       <span
                         className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
-                          isInside
-                            ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
-                            : 'bg-zinc-800 text-gray-400'
+                          !paid
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : alreadyUsed
+                            ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40'
+                            : 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
                         }`}
                       >
-                        {status} {isInside && t.insideSince ? `(${t.insideSince})` : ''}
+                        {!paid
+                          ? 'WAITING PAYMENT'
+                          : alreadyUsed
+                          ? `USED (${t.insideSince || status})`
+                          : 'VALID / OUTSIDE'}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-1">
-                      {isInside ? (
-                        <button
-                          type="button"
-                          onClick={() => handleAdminCheckOut(t.ticketId || t.id)}
-                          className="bg-amber-500 hover:bg-amber-400 text-black font-extrabold px-3 py-1 rounded-lg text-[10px] flex items-center gap-1 transition shadow-sm cursor-pointer"
-                        >
-                          <LogOut className="w-3 h-3 stroke-[2.5]" />
-                          <span>Check Out</span>
-                        </button>
+                      {!paid ? (
+                        <span className="text-[10px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
+                          Approve payment first
+                        </span>
+                      ) : alreadyUsed ? (
+                        <span className="text-[10px] font-bold text-rose-300 bg-rose-500/10 border border-rose-500/30 px-2.5 py-1 rounded-lg">
+                          Already Scanned (Single-Use Invalid)
+                        </span>
                       ) : (
                         <button
                           type="button"

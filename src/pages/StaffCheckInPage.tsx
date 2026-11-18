@@ -45,6 +45,12 @@ import {
   doesTicketMatchCustomerQr,
   doesReservationMatchCustomerQr,
 } from '../utils/customerQr';
+import { isTicketPaid } from '../utils/ticketStatus';
+import { getTicketQuantity } from '../utils/eventTicketLimit';
+import {
+  getUserOwnedEventIds,
+  isUserVerifiedAdminSession,
+} from '../utils/legacyCleanup';
 
 type OverlayState =
   | {
@@ -152,10 +158,19 @@ export const StaffCheckInPage: React.FC = () => {
     return d.toDateString();
   }, []);
 
-  // Filter & prioritize events for today
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const ownedEventIds = useMemo(
+    () => getUserOwnedEventIds(currentUser, events, stores),
+    [currentUser, events, stores]
+  );
+
+  // Filter & prioritize events for today (non-Admins see only their own events/venues)
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
-    return [...events].sort((a, b) => {
+    const baseEvents = isVerifiedAdmin
+      ? events
+      : events.filter((ev) => ownedEventIds.has(ev.id));
+    return [...baseEvents].sort((a, b) => {
       // Prioritize today's events
       const aIsToday = a.date?.toLowerCase().includes('today') || a.date?.includes(todayStr);
       const bIsToday = b.date?.toLowerCase().includes('today') || b.date?.includes(todayStr);
@@ -163,7 +178,7 @@ export const StaffCheckInPage: React.FC = () => {
       if (!aIsToday && bIsToday) return 1;
       return 0;
     });
-  }, [events, todayStr]);
+  }, [events, todayStr, isVerifiedAdmin, ownedEventIds]);
 
   // Set default selected event
   useEffect(() => {
@@ -227,13 +242,23 @@ export const StaffCheckInPage: React.FC = () => {
     return () => unsubRes();
   }, []);
 
-  // Live counter calculation
-  const totalCapacity = selectedEvent?.ticketsAvailable || (liveTickets.length > 0 ? liveTickets.length : 200);
+  // Live counter calculation (approved PAID tickets only)
+  const paidLiveTickets = useMemo(() => liveTickets.filter((t) => isTicketPaid(t)), [liveTickets]);
+  const totalCapacity = selectedEvent?.ticketsAvailable || 200;
   const checkedInCount = useMemo(() => {
-    return liveTickets.filter(
-      (t) => t.status === 'USED' || t.status === 'used' || Boolean(t.checkedInAt)
-    ).length;
-  }, [liveTickets]);
+    return paidLiveTickets
+      .filter(
+        (t) =>
+          t.status === 'USED' ||
+          t.status === 'used' ||
+          t.status === 'inside' ||
+          t.attendanceStatus === 'INSIDE' ||
+          t.attendanceStatus === 'EXITED' ||
+          Boolean(t.checkedInAt) ||
+          Boolean(t.checkedAt)
+      )
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+  }, [paidLiveTickets]);
 
   // Screen Wake Lock API
   const acquireWakeLock = async () => {
@@ -441,9 +466,20 @@ export const StaffCheckInPage: React.FC = () => {
         const matches = list.filter((t) => doesTicketMatchCustomerQr(t, scan));
         return (
           matches.find((t) => {
-            const att = t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
-            return att !== 'INSIDE' && t.status?.toLowerCase() !== 'expired';
-          }) || matches[0]
+            const att = t.attendanceStatus || (t.status === 'used' || t.status === 'inside' ? 'INSIDE' : 'OUTSIDE');
+            const alreadyUsed =
+              t.status === 'USED' ||
+              t.status === 'used' ||
+              t.status === 'inside' ||
+              att === 'INSIDE' ||
+              att === 'EXITED' ||
+              Boolean(t.checkedInAt) ||
+              Boolean(t.checkedAt) ||
+              (Array.isArray(t.attendanceLogs) && t.attendanceLogs.length > 0);
+            return isTicketPaid(t) && !alreadyUsed && t.status?.toLowerCase() !== 'expired';
+          }) ||
+          matches.find((t) => isTicketPaid(t)) ||
+          matches[0]
         );
       };
 
@@ -499,6 +535,33 @@ export const StaffCheckInPage: React.FC = () => {
           customerName,
           customerPhoto,
         });
+      } else if (!isTicketPaid(matchedTicket)) {
+        // CASE: PAYMENT NOT APPROVED YET
+        playErrorBuzzer();
+        try {
+          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+        } catch (e) {}
+
+        await addDoc(collection(db, 'checkInLogs'), {
+          customerId: cleanCustomerId,
+          customerName: matchedTicket.customerName || customerName,
+          eventId: selectedEventId,
+          eventTitle: selectedEvent?.title || 'Unknown Event',
+          status: 'PAYMENT_PENDING',
+          method,
+          staffId: currentUser.id,
+          staffName: currentUser.name,
+          timestamp: serverTimestamp(),
+          createdAt: new Date().toISOString(),
+        });
+
+        triggerOverlay({
+          type: 'DYNAMIC_QR_INVALID',
+          customerId: cleanCustomerId,
+          customerName: matchedTicket.customerName || customerName,
+          subtitle: 'Payment Not Approved',
+          reason: 'Customer PayShap payment must be approved first before this ticket is valid.',
+        });
       } else if (!hasEventDateArrived(matchedTicket.eventDate || selectedEvent?.date).arrived) {
         // CASE: EVENT DATE HAS NOT YET ARRIVED
         playErrorBuzzer();
@@ -534,9 +597,12 @@ export const StaffCheckInPage: React.FC = () => {
         matchedTicket.status === 'used' ||
         (matchedTicket.status as string) === 'inside' ||
         matchedTicket.attendanceStatus === 'INSIDE' ||
-        Boolean(matchedTicket.checkedInAt)
+        matchedTicket.attendanceStatus === 'EXITED' ||
+        Boolean(matchedTicket.checkedInAt) ||
+        Boolean(matchedTicket.checkedAt) ||
+        (Array.isArray(matchedTicket.attendanceLogs) && matchedTicket.attendanceLogs.length > 0)
       ) {
-        // CASE B: ALREADY USED
+        // CASE B: ALREADY USED (Single-use QR code)
         playErrorBuzzer();
         try {
           if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
@@ -579,18 +645,32 @@ export const StaffCheckInPage: React.FC = () => {
           if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
         } catch (e) {}
 
-        // Update ticket in Firestore - Save status as 'inside'
+        // Update ticket in Firestore - Save status as 'inside' and record checkedAt for single-use invalidation
         const nowIso = new Date().toISOString();
         const timeFormatted = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        const existingLogs = Array.isArray(matchedTicket.attendanceLogs) ? matchedTicket.attendanceLogs : [];
+        const updatedLogs = [
+          ...existingLogs,
+          {
+            action: 'CHECK_IN',
+            timestamp: nowIso,
+            timeFormatted,
+            bouncerName: currentUser.name || 'Staff Gate',
+            bouncerRole: currentUser.role || 'Staff',
+            notes: 'Single-use QR entry',
+          },
+        ];
         const ticketRef = doc(db, 'tickets', matchedTicket.id);
         await updateDoc(ticketRef, {
           status: 'inside',
           attendanceStatus: 'INSIDE',
           insideSince: timeFormatted,
           lastMovementAt: timeFormatted,
+          checkedAt: nowIso,
           checkedInAt: nowIso,
           checkedInBy: currentUser.id,
           checkedInStaffName: currentUser.name,
+          attendanceLogs: updatedLogs,
         });
 
         // Log attempt
@@ -863,7 +943,7 @@ export const StaffCheckInPage: React.FC = () => {
             >
               {sortedEvents.map((ev) => (
                 <option key={ev.id} value={ev.id}>
-                  {ev.title} @ {ev.location || 'Florence Palm'} ({ev.date})
+                  {ev.title} @ {ev.location || ev.storeName || 'Event Venue'} ({ev.date})
                 </option>
               ))}
             </select>

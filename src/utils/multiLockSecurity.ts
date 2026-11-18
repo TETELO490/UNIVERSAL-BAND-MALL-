@@ -211,6 +211,56 @@ export async function verifyPatternLock(
   return hashVal === hash;
 }
 
+/**
+ * Returns true only if the user has actively configured at least one lock mechanism
+ * (PIN, Password, Pattern, or Hardware Fingerprint).
+ * If no lock has been created for the account, returns false so lock screens NEVER appear.
+ */
+export function hasUserConfiguredLock(
+  emailOrUid?: string,
+  userDocData?: any
+): boolean {
+  const cleanEmail = (emailOrUid || '').trim().toLowerCase();
+
+  // 1. Check local storage for PIN
+  if (typeof window !== 'undefined') {
+    const rawPin = localStorage.getItem('ub_pin');
+    if (rawPin && rawPin.trim().length >= 4) return true;
+    if (cleanEmail) {
+      const userPin = localStorage.getItem(`ub_pin_${cleanEmail}`);
+      if (userPin && userPin.trim().length >= 4) return true;
+    }
+  }
+
+  // 2. Check local multi-lock config (password, pattern, or real enrolled fingerprint)
+  const cfg = getMultiLockConfig(cleanEmail);
+  if (cfg.passwordEnabled && Boolean(cfg.passwordHash)) return true;
+  if (cfg.patternEnabled && Boolean(cfg.patternHash)) return true;
+  if (
+    cfg.fingerprintEnabled &&
+    cfg.fingerprintEnrolled &&
+    isRealCredentialId(cfg.fingerprintCredentialId)
+  ) {
+    return true;
+  }
+
+  // 3. Check Firestore userDocData securitySettings if provided
+  const fsSec = userDocData?.securitySettings;
+  if (fsSec) {
+    if (fsSec.pin && String(fsSec.pin).trim().length >= 4) return true;
+    if (fsSec.passwordHash && fsSec.passwordEnabled !== false) return true;
+    if (fsSec.patternHash && fsSec.patternEnabled !== false) return true;
+    if (
+      fsSec.fingerprintEnabled !== false &&
+      isRealCredentialId(fsSec.fingerprintCredentialId)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function isAccountSecurityRequired(
   email?: string,
   role?: string,
@@ -219,9 +269,20 @@ export function isAccountSecurityRequired(
   if (!email && !role) return false;
   const cleanEmail = (email || '').trim().toLowerCase();
 
-  if (role === 'Admin' || role === 'Promoter') return true;
-  if (userDocData?.role === 'Admin' || userDocData?.role === 'Promoter' || userDocData?.isAdmin === true) return true;
-  if (cleanEmail === 'tetelophokwane98@gmail.com' || cleanEmail === 'admin@universalband.co.za') return true;
+  // If someone didn't create a lock in their account, security verification MUST NOT appear!
+  if (!hasUserConfiguredLock(cleanEmail, userDocData)) {
+    return false;
+  }
+
+  if (role === 'Admin' || role === 'Promoter' || role === 'Event Organiser' || role === 'organizer') return true;
+  if (
+    userDocData?.role === 'Admin' ||
+    userDocData?.role === 'Promoter' ||
+    userDocData?.role === 'Event Organiser' ||
+    userDocData?.isAdmin === true
+  ) {
+    return true;
+  }
   if (isAuthorizedAdminEmail(cleanEmail)) return true;
 
   const fsSec = userDocData?.securitySettings;
@@ -238,7 +299,11 @@ export function isAccountSecurityRequired(
   }
 
   const cfg = getMultiLockConfig(cleanEmail);
-  if ((cfg.fingerprintEnrolled && isRealCredentialId(cfg.fingerprintCredentialId)) || cfg.patternHash || cfg.passwordHash) {
+  if (
+    (cfg.fingerprintEnrolled && isRealCredentialId(cfg.fingerprintCredentialId)) ||
+    cfg.patternHash ||
+    cfg.passwordHash
+  ) {
     return true;
   }
 

@@ -75,7 +75,9 @@ export const ProfilePage: React.FC = () => {
     localStorage.getItem('ub_admin_session') === 'true' &&
     sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
   );
-  const isPromoter = isUserLoggedIn && roleLower === 'promoter';
+  const isPromoter =
+    isUserLoggedIn &&
+    (roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer');
   const isStaffOrAbove = isAdmin || isPromoter;
 
   const [googleError, setGoogleError] = useState<string | null>(null);
@@ -649,6 +651,9 @@ export const ProfilePage: React.FC = () => {
                 })}
 
                 {myOneQrOrders.map((ord) => {
+                  const isWaitingPay =
+                    ord.paymentStatus === 'WAITING FOR PAYMENT' ||
+                    ord.paymentStatus === 'PENDING_PAYMENT';
                   const isDone = ord.status === 'collected' || ord.status === 'delivered';
                   const firstItem = ord.items?.[0]?.name || 'Order';
                   const summary =
@@ -675,11 +680,29 @@ export const ProfilePage: React.FC = () => {
                         <p className="text-xs font-bold text-white tabular-nums">
                           R{Number(ord.total || 0).toFixed(2)}
                         </p>
-                        <p className={`text-[11px] font-semibold ${isDone ? 'text-emerald-400' : 'text-[#FACC15]'}`}>
-                          {ord.status === 'delivered'
+                        <p
+                          className={`text-[11px] font-semibold ${
+                            ord.status === 'cancelled'
+                              ? 'text-rose-400'
+                              : isWaitingPay
+                              ? 'text-amber-300'
+                              : isDone
+                              ? 'text-emerald-400'
+                              : 'text-[#FACC15]'
+                          }`}
+                        >
+                          {ord.status === 'cancelled'
+                            ? 'Cancelled'
+                            : isWaitingPay
+                            ? 'Waiting Payment'
+                            : ord.status === 'delivered'
                             ? 'Delivered'
                             : ord.status === 'collected'
                             ? 'Collected'
+                            : ord.status === 'out_for_delivery' || ord.status === 'collected_by_driver'
+                            ? 'On The Way'
+                            : ord.status === 'driver_assigned'
+                            ? 'Driver Assigned'
                             : ord.status === 'ready_for_pickup'
                             ? 'Ready'
                             : 'Preparing'}

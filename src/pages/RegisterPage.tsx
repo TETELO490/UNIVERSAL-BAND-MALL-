@@ -195,7 +195,7 @@ export const RegisterPage: React.FC = () => {
         status: isCustomer ? 'active' : 'pending',
         isApproved: isCustomer,
         createdAt: new Date().toISOString(),
-        walletBalance: isCustomer ? 1000 : 0,
+        walletBalance: 0,
         isRegistered: true,
         emailVerified: true,
         // Role specific metadata
@@ -223,7 +223,7 @@ export const RegisterPage: React.FC = () => {
         if (isCustomer) {
           await setDoc(doc(db, 'wallets', uid), {
             userId: uid,
-            balance: 1000,
+            balance: 0,
             createdAt: new Date().toISOString(),
           }, { merge: true });
         }
@@ -244,11 +244,11 @@ export const RegisterPage: React.FC = () => {
       if (isCustomer) {
         // Customer: Automatically log in immediately and resume checkout without waiting
         setCurrentUser(userProfile);
-        localStorage.setItem('wallet_balance', '1000');
-        localStorage.setItem(`ub_wallet_balance_${cleanEmail}`, '1000');
+        localStorage.setItem('wallet_balance', '0');
+        localStorage.setItem(`ub_wallet_balance_${cleanEmail}`, '0');
         localStorage.setItem('ub_user_profile', JSON.stringify(userProfile));
         localStorage.setItem('ub_has_registered', 'true');
-        setWelcomeMessage(`Welcome ${cleanName}! Your account is active with R1,000.00 wallet credit.`);
+        setWelcomeMessage(`Welcome ${cleanName}! Your account is now active.`);
 
         try {
           confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });

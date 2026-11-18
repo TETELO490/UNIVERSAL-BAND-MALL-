@@ -1,6 +1,7 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
 import { Home, Calendar, ShoppingBag, User, Ticket as TicketIcon } from 'lucide-react';
+import { getRoleScopedTickets } from '../utils/legacyCleanup';
 
 export const BottomNav: React.FC = () => {
   const {
@@ -11,6 +12,8 @@ export const BottomNav: React.FC = () => {
     totalCartCount,
     setPendingCheckoutTarget,
     tickets,
+    events,
+    stores,
   } = useApp();
 
   const isAuthPage =
@@ -41,14 +44,9 @@ export const BottomNav: React.FC = () => {
     currentRoute.startsWith('/promoter');
 
   const safeTickets = Array.isArray(tickets) ? tickets : [];
-  const userTicketsCount = safeTickets.filter(
-    (t) =>
-      t &&
-      (t.customerPhone === currentUser?.phone ||
-        t.attendeePhone === currentUser?.phone ||
-        t.userId === currentUser?.id ||
-        t.user_id === currentUser?.id)
-  ).length;
+  const userTicketsCount = isLoggedIn
+    ? getRoleScopedTickets({ tickets: safeTickets, currentUser, events, stores }).length
+    : 0;
 
   const handleEventsClick = () => {
     navigateTo('/events');

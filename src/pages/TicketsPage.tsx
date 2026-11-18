@@ -18,17 +18,49 @@ import {
 import { maskPhoneNumber } from '../utils/attendanceService';
 import { isEventExpired } from '../utils/dateHelper';
 import { isTicketWaitingPayment, isTicketPaid } from '../utils/ticketStatus';
+import {
+  doesUserPersonallyOwnTicket,
+  getRoleScopedTickets,
+  isUserVerifiedAdminSession,
+} from '../utils/legacyCleanup';
+import { normalizePhoneDigits } from '../utils/customerQr';
 
 export const TicketsPage: React.FC = () => {
-  const { tickets, stores, events, navigateTo, setSelectedTicket, setActiveModal, openEventFoodPreorder } = useApp();
+  const {
+    tickets,
+    mallOrders,
+    stores,
+    events,
+    currentUser,
+    navigateTo,
+    setSelectedTicket,
+    setActiveModal,
+    openEventFoodPreorder,
+  } = useApp();
   const [activeTab, setActiveTab] = useState<'active' | 'billed'>('active');
+
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const isOrganizerRole =
+    roleLower === 'promoter' ||
+    roleLower === 'event organiser' ||
+    roleLower === 'organizer' ||
+    roleLower === 'seller' ||
+    roleLower === 'vendor' ||
+    roleLower === 'store manager' ||
+    roleLower === 'manager';
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+
+  // Strictly scope tickets by user role & ownership (zero legacy/stranger leakage)
+  const scopedTickets = useMemo(() => {
+    return getRoleScopedTickets({ tickets, currentUser, events, stores });
+  }, [tickets, currentUser, events, stores]);
 
   // Split tickets: Active (valid or in-use today, excluding expired) vs Billed
   const { activeTickets, billedTickets } = useMemo(() => {
     const active: TicketType[] = [];
     const billed: TicketType[] = [];
 
-    for (const t of tickets) {
+    for (const t of scopedTickets) {
       const expired = isEventExpired(t) || t.status === 'expired';
       if (t.status === 'billed' || (t.status as string) === 'Billed' || t.isBilled || expired) {
         billed.push(t);
@@ -37,7 +69,7 @@ export const TicketsPage: React.FC = () => {
       }
     }
     return { activeTickets: active, billedTickets: billed };
-  }, [tickets]);
+  }, [scopedTickets]);
 
   const handleTicketClick = (ticket: TicketType) => {
     setSelectedTicket(ticket);
@@ -52,14 +84,16 @@ export const TicketsPage: React.FC = () => {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-3xl font-extrabold text-white tracking-tight">
-            My Tickets
+            {isVerifiedAdmin ? 'All Event Tickets' : isOrganizerRole ? 'My Event Tickets' : 'My Tickets'}
           </h1>
           <p className="text-xs text-gray-400 mt-0.5">
-            Universal Band wristband passes & itemized event billing
+            {isOrganizerRole
+              ? 'Tickets purchased for your events & your personal passes'
+              : 'Universal Band wristband passes & itemized event billing'}
           </p>
         </div>
         <span className="bg-[#FACC15] text-black font-extrabold text-xs px-2.5 py-1 rounded-full shadow-sm">
-          {tickets.length} Total
+          {scopedTickets.length} Total
         </span>
       </div>
 
@@ -134,11 +168,17 @@ export const TicketsPage: React.FC = () => {
             )}
           </div>
           <h3 className="text-white font-bold text-base mb-1">
-            {activeTab === 'active' ? 'No Active Tickets' : 'No Settled Bills Yet'}
+            {activeTab === 'active'
+              ? isOrganizerRole
+                ? 'No Ticket Sales Yet'
+                : 'No Active Tickets'
+              : 'No Settled Bills Yet'}
           </h3>
           <p className="text-gray-400 text-xs mb-5">
             {activeTab === 'active'
-              ? 'You do not have any pending or upcoming event passes.'
+              ? isOrganizerRole
+                ? 'When someone buys a ticket for your event, it will appear here automatically.'
+                : 'You do not have any pending or upcoming event passes.'
               : 'Used tickets will move here automatically at 00:00 midnight once the event concludes.'}
           </p>
           {activeTab === 'active' ? (
@@ -164,6 +204,26 @@ export const TicketsPage: React.FC = () => {
           {displayedTickets.map((ticket, index) => {
             const isBilled = ticket.status === 'billed' || (ticket.status as string) === 'Billed' || ticket.isBilled;
             const isUsed = ticket.status === 'used' || (ticket.status as string) === 'Used';
+            const isPersonalTicket = doesUserPersonallyOwnTicket(ticket, currentUser);
+
+            const tPhoneDigits = normalizePhoneDigits(ticket.attendeePhone || ticket.customerPhone || '');
+            const linkedPreorderOrder =
+              mallOrders.find(
+                (o) =>
+                  o.status !== 'cancelled' &&
+                  (o.id === ticket.preorderOrderId ||
+                    (ticket.eventId &&
+                      o.eventId === ticket.eventId &&
+                      ((ticket.userId && o.customerId === ticket.userId) ||
+                        (ticket.customerQrId && o.customerQrId === ticket.customerQrId) ||
+                        (tPhoneDigits.length >= 7 && normalizePhoneDigits(o.customerPhone) === tPhoneDigits))))
+              ) || null;
+            const resolvedPreorderSummary =
+              ticket.preorderSummary ||
+              (linkedPreorderOrder
+                ? linkedPreorderOrder.items.map((it) => `${it.quantity}× ${it.name}`).join(', ')
+                : '');
+            const hasResolvedPreorder = Boolean(ticket.hasFoodPreorder || resolvedPreorderSummary);
 
             const ticketLocation =
               ticket.eventLocation?.trim() ||
@@ -194,13 +254,24 @@ export const TicketsPage: React.FC = () => {
                       : 'bg-gradient-to-r from-yellow-500/15 via-zinc-900 to-[#161619]'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-xl bg-[#FACC15] flex items-center justify-center text-black font-black text-xs shadow-md">
                       UB
                     </div>
                     <span className="text-xs font-mono tracking-wider text-gray-200 font-extrabold">
                       {ticket.bandCode || ticket.ticketId}
                     </span>
+                    {isOrganizerRole && (
+                      <span
+                        className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                          doesUserPersonallyOwnTicket(ticket, currentUser)
+                            ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                            : 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                        }`}
+                      >
+                        {doesUserPersonallyOwnTicket(ticket, currentUser) ? 'My Pass' : 'Event Sale'}
+                      </span>
+                    )}
                   </div>
 
                   {/* Status Badge */}
@@ -289,17 +360,27 @@ export const TicketsPage: React.FC = () => {
                   {/* Food Pre-Order Section */}
                   {!isBilled && (
                     <div>
-                      {ticket.hasFoodPreorder || ticket.preorderSummary ? (
+                      {hasResolvedPreorder ? (
                         <div className="bg-purple-950/60 border border-purple-500/40 rounded-2xl p-3 text-xs flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <Utensils className="w-4 h-4 text-purple-400 shrink-0" />
                             <span className="text-white font-bold truncate">
-                              Food Pre-Ordered: {ticket.preorderSummary}
+                              {isPersonalTicket ? 'Food Pre-Ordered:' : 'Customer Food Pre-Ordered:'} {resolvedPreorderSummary}
                             </span>
                           </div>
                           <span className="text-[10px] font-black uppercase bg-emerald-500 text-black px-2 py-0.5 rounded-full shrink-0">
                             Paid
                           </span>
+                        </div>
+                      ) : !isPersonalTicket ? (
+                        <div className="w-full bg-zinc-900/80 border border-white/10 text-gray-300 font-semibold text-xs rounded-2xl py-2.5 px-3 flex items-center gap-2">
+                          <Utensils className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                          <span>Customer has not placed a food pre-order yet</span>
+                        </div>
+                      ) : isTicketWaitingPayment(ticket) ? (
+                        <div className="w-full bg-zinc-900/80 border border-white/10 text-amber-300 font-bold text-xs rounded-2xl py-2.5 px-3 flex items-center justify-center gap-2">
+                          <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span>Food pre-orders unlock after payment approval</span>
                         </div>
                       ) : (
                         <button
@@ -363,6 +444,14 @@ export const TicketsPage: React.FC = () => {
                         <span className="font-medium text-yellow-500/90">
                           Settled Financial Receipt
                         </span>
+                      ) : isTicketWaitingPayment(ticket) ? (
+                        <span className="font-semibold text-amber-300 truncate">
+                          Pass Locked • Awaiting Payment Approval
+                        </span>
+                      ) : isUsed ? (
+                        <span className="font-semibold text-gray-400 truncate">
+                          Single-Use Pass Redeemed
+                        </span>
                       ) : (
                         <>
                           <Radio className="w-4 h-4 text-[#FACC15] animate-pulse shrink-0" />
@@ -375,7 +464,13 @@ export const TicketsPage: React.FC = () => {
 
                     <div className="flex items-center gap-1.5 font-bold text-[#FACC15] group-hover:translate-x-0.5 transition-transform shrink-0">
                       <TicketIcon className="w-4 h-4" />
-                      <span>{isBilled ? 'View Receipt' : 'View Pass · Use Profile QR'}</span>
+                      <span>
+                        {isBilled
+                          ? 'View Receipt'
+                          : isTicketWaitingPayment(ticket)
+                          ? 'View Payment Instructions'
+                          : 'View Pass · Use Profile QR'}
+                      </span>
                       <ChevronRight className="w-3.5 h-3.5" />
                     </div>
                   </div>

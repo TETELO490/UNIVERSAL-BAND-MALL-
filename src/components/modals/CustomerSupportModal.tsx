@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { fileToBase64 } from '../../utils/imageUploadHelper';
 import { isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
+import { doesUserPersonallyOwnTicket, isLegacyTestTicket } from '../../utils/legacyCleanup';
 import {
   ensureCameraPermission,
   ensureMicrophonePermission,
@@ -61,13 +62,11 @@ export const CustomerSupportModal: React.FC = () => {
 
   // Tickets belonging to current user that are waiting for payment
   const waitingTickets = tickets.filter((t) => {
-    const isOwner =
-      t.userId === currentUser.id ||
-      t.user_id === currentUser.id ||
-      t.customerPhone === currentUser.phone ||
-      t.attendeePhone === currentUser.phone ||
-      t.customerQrId === currentUser.customerQrId ||
-      !t.userId; // guest tickets in local session
+    if (isLegacyTestTicket(t)) return false;
+    const isGuest = !currentUser?.id || currentUser.id === 'guest_user';
+    const isOwner = isGuest
+      ? t.userId === 'guest_user' || t.user_id === 'guest_user'
+      : doesUserPersonallyOwnTicket(t, currentUser);
     return isOwner && isTicketWaitingPayment(t);
   });
 

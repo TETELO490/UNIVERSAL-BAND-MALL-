@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { EventItem, MenuItemDoc } from '../types';
-import { INITIAL_ITEMS } from '../data/seedData';
 import { db } from '../firebase';
 import { getUserAge, isAlcoholItem } from '../utils/ageHelper';
 import { isEventExpired, getDefaultFutureEventDate } from '../utils/dateHelper';
@@ -59,6 +58,11 @@ import { DatePickerInput } from '../components/DatePickerInput';
 import { isSameDay } from '../utils/dateHelper';
 import { MallOrder } from '../types';
 import { MealCustomizerModal } from '../components/modals/MealCustomizerModal';
+import {
+  doesUserOwnMallOrder,
+  doesUserOwnReservation,
+  isUserVerifiedAdminSession,
+} from '../utils/legacyCleanup';
 import { EventQrShareCard } from '../components/events/EventQrShareCard';
 
 export const StoreDetailPage: React.FC = () => {
@@ -91,6 +95,7 @@ export const StoreDetailPage: React.FC = () => {
     storePresence,
     updateStorePresence,
     checkIsStoreOnline,
+    addWalletTransaction,
   } = useApp();
 
   const [showDeleteStoreConfirm, setShowDeleteStoreConfirm] = useState(false);
@@ -261,30 +266,34 @@ export const StoreDetailPage: React.FC = () => {
     }
   };
 
-  const store = stores.find((s) => s.id === selectedStoreId) || stores[0];
+  const store = selectedStoreId
+    ? stores.find((s) => s.id === selectedStoreId)
+    : stores[0];
   const currentWalletId = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
   const userAge = getUserAge(currentUser);
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isOwner = Boolean(
-    roleLower === 'admin' ||
-    roleLower === 'owner' ||
-    roleLower === 'promoter' ||
-    roleLower === 'event organiser' ||
-    roleLower === 'organizer' ||
-    roleLower === 'store manager' ||
-    roleLower === 'manager' ||
-    (roleLower === 'promoter' && (store?.ownerId === currentWalletId || store?.promoterId === currentUser.id || currentUser.assignedStoreId === store?.id)) ||
-    store?.ownerId === currentWalletId ||
-    currentUser?.assignedStoreId === store?.id
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const matchesStoreAssignment = Boolean(
+    store?.id && currentUser?.assignedStoreId && currentUser.assignedStoreId === store.id
+  );
+  const ownsStoreRecord = Boolean(
+    store &&
+      ((currentWalletId && store.ownerId === currentWalletId) ||
+        (currentWalletId && store.promoterId === currentWalletId))
   );
   const isManager = Boolean(
-    roleLower === 'manager' &&
-    (currentUser?.assignedStoreId === store?.id || currentUser?.assignedStoreName === store?.name)
+    (roleLower === 'manager' || roleLower === 'store manager') &&
+    (matchesStoreAssignment || ownsStoreRecord)
   );
   const isWorker = Boolean(
     (roleLower === 'worker' || roleLower === 'staff' || roleLower === 'shop worker') &&
-    (currentUser?.assignedStoreId === store?.id || currentUser?.assignedStoreName === store?.name)
+    (matchesStoreAssignment || ownsStoreRecord)
+  );
+  const isOwner = Boolean(
+    isVerifiedAdmin ||
+    ownsStoreRecord ||
+    (matchesStoreAssignment && !isManager && !isWorker)
   );
 
   const isStoreStaff = isOwner || isManager || isWorker;
@@ -318,36 +327,17 @@ export const StoreDetailPage: React.FC = () => {
         const qStore = query(itemsCol, where('storeId', '==', store.id));
         unsubItems = onSnapshot(
           qStore,
-          async (snapshot) => {
-            if (snapshot.empty) {
-              // Populate initial store-scoped items with required storeId, storeName, subCategory, and isAlcohol
-              const matchingSeed = INITIAL_ITEMS.filter((i) => i.storeId === store.id);
-              for (const seedItem of matchingSeed) {
-                try {
-                  await setDoc(doc(db, 'items', seedItem.id), {
-                    ...seedItem,
-                    storeId: store.id,
-                    storeName: store.name,
-                    ownerId: store.ownerId || '',
-                  });
-                } catch (e) {
-                  console.warn('Error seeding item to Firestore:', e);
-                }
-              }
-              setStoreItems(matchingSeed);
-            } else {
-              const list: MenuItemDoc[] = [];
-              snapshot.forEach((d) => {
-                list.push({ id: d.id, ...(d.data() as any) });
-              });
-              setStoreItems(list);
-            }
+          (snapshot) => {
+            const list: MenuItemDoc[] = [];
+            snapshot.forEach((d) => {
+              list.push({ id: d.id, ...(d.data() as any) });
+            });
+            setStoreItems(list);
             setItemsLoading(false);
           },
           (error) => {
             console.warn('Error listening to store items:', error);
-            const fallback = INITIAL_ITEMS.filter((i) => i.storeId === store.id);
-            setStoreItems(fallback);
+            setStoreItems([]);
             setItemsLoading(false);
           }
         );
@@ -362,7 +352,10 @@ export const StoreDetailPage: React.FC = () => {
           unsubRes = onSnapshot(qRes, (snap) => {
             const resList: any[] = [];
             snap.forEach((d) => {
-              resList.push({ id: d.id, ...d.data() });
+              const data = d.data();
+              if (doesUserOwnReservation(data as any, currentUser)) {
+                resList.push({ id: d.id, ...data });
+              }
             });
             setUserStoreReservations(resList);
           }, (err) => {
@@ -373,8 +366,7 @@ export const StoreDetailPage: React.FC = () => {
         }
       } catch (err) {
         console.warn('Error setting up store detail data:', err);
-        const fallback = INITIAL_ITEMS.filter((i) => i.storeId === store.id);
-        setStoreItems(fallback);
+        setStoreItems([]);
         setItemsLoading(false);
       }
     };
@@ -386,6 +378,26 @@ export const StoreDetailPage: React.FC = () => {
       if (unsubRes) unsubRes();
     };
   }, [store?.id, store?.name, store?.ownerId, currentWalletId]);
+
+  if (!store) {
+    return (
+      <div className="max-w-md mx-auto pt-12 px-4 pb-28 text-center">
+        <div className="bg-[#1A1A1A] border border-white/10 rounded-3xl p-8 space-y-3">
+          <h2 className="text-base font-black text-white">Store Not Found</h2>
+          <p className="text-xs text-gray-400">
+            This store has not been published yet or is no longer available.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigateTo('/')}
+            className="px-5 py-2.5 bg-[#FACC15] text-black font-black text-xs rounded-xl cursor-pointer"
+          >
+            Back to Mall
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // Tickets and events under this store.
   // RULE: Customers only see active/upcoming events. Store staff & admins can see full event history.
@@ -417,18 +429,20 @@ export const StoreDetailPage: React.FC = () => {
   // Universal Band Mall helpers for this store
   const storeCartSummary = getCartSummary(store.id);
   const storeCartItems = carts[store.id] || [];
-  const storeMessagesList = storeMessages.filter(
-    (m) => m.storeId === store.id || m.storeName === store.name
-  );
+  const storeMessagesList = isStoreStaff
+    ? storeMessages.filter((m) => (m.storeId ? m.storeId === store.id : m.storeName === store.name))
+    : [];
   const unreadMessagesCount = storeMessagesList.filter((m) => !m.read).length;
   const todayOrdersCount = storeMessagesList.filter((m) => m.type === 'ORDER_TODAY').length;
 
-  const activeCustomerOrders = mallOrders.filter(
-    (o) =>
-      o.storeId === store.id &&
-      (o.customerId === currentUser.id || (Boolean(currentUser.phone) && o.customerPhone === currentUser.phone)) &&
-      o.status !== 'collected'
-  );
+  const activeCustomerOrders = currentWalletId
+    ? mallOrders.filter(
+        (o) =>
+          o.storeId === store.id &&
+          doesUserOwnMallOrder(o, currentUser) &&
+          o.status !== 'collected'
+      )
+    : [];
 
   // Reserve button inside store page:
   // Requirement: Block reservation of subCategory=="alcohol" if user age < 18
@@ -459,7 +473,9 @@ export const StoreDetailPage: React.FC = () => {
 
     const itemPrice = parseNumericPrice(item.price);
     const wRef = doc(db, 'wallets', currentWalletId);
+    const uRef = doc(db, 'users', currentWalletId);
     const rRef = doc(collection(db, 'reservations'));
+    const txRef = doc(collection(db, 'transactions'));
 
     setReservingItemId(item.id);
     setToast(null);
@@ -474,15 +490,17 @@ export const StoreDetailPage: React.FC = () => {
         });
       }
 
-      await runTransaction(db, async (t) => {
+      const nextBalance = await runTransaction(db, async (t) => {
         const w = await t.get(wRef);
-        const curBal = w.exists() ? w.data().balance : currentUser.walletBalance;
+        const curBal = w.exists() ? Number(w.data().balance ?? 0) : currentUser.walletBalance;
 
         if (curBal < itemPrice) {
           throw new Error('low funds');
         }
 
-        t.update(wRef, { balance: increment(-itemPrice) });
+        const updatedBal = Math.round(Math.max(0, curBal - itemPrice) * 100) / 100;
+        t.update(wRef, { balance: increment(-itemPrice), updatedAt: new Date().toISOString() });
+        t.set(uRef, { walletBalance: updatedBal }, { merge: true });
 
         t.set(rRef, {
           walletId: currentWalletId,
@@ -496,11 +514,37 @@ export const StoreDetailPage: React.FC = () => {
           subCategory: item.subCategory || (isAlcohol ? 'alcohol' : 'soft'),
           isAlcohol: isAlcohol,
           status: 'paid',
+          paymentStatus: 'PAID',
           paidAt: serverTimestamp(),
         });
+
+        t.set(txRef, {
+          userId: currentWalletId,
+          customerId: currentUser.idNumber || currentWalletId,
+          customerName: currentUser.fullName || currentUser.name,
+          type: (item.category || 'drink').toLowerCase() === 'food' ? 'food' : 'drink',
+          description: `Reserved ${item.name} at ${store.name}`,
+          amount: itemPrice,
+          storeId: store.id,
+          storeName: store.name,
+          paymentMethod: 'Wallet',
+          status: 'Paid',
+          reference: rRef.id,
+          timestamp: serverTimestamp(),
+          createdAt: new Date().toISOString(),
+        });
+
+        return updatedBal;
       });
 
-      await topUpWallet(-itemPrice);
+      localStorage.setItem('wallet_balance', String(nextBalance));
+      addWalletTransaction({
+        type: 'purchase',
+        title: `Reserved: ${item.name}`,
+        subtitle: `${store.name} • Counter Pickup`,
+        amount: -itemPrice,
+        reference: rRef.id,
+      });
 
       setToast({
         message: `Reserved & Paid R${itemPrice.toFixed(0)}! To collect at ${store.name}.`,

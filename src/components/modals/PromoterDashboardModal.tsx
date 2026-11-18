@@ -33,9 +33,18 @@ import { AttendanceStatus } from '../../types';
 import { EventQrShareCard } from '../events/EventQrShareCard';
 import { isEventExpired } from '../../utils/dateHelper';
 import { isTicketPaid } from '../../utils/ticketStatus';
+import { getTicketQuantity } from '../../utils/eventTicketLimit';
 import { AddMenuItemModal } from './AddMenuItemModal';
-import { deleteDoc, doc } from 'firebase/firestore';
+import { deleteDoc, doc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
+import {
+  getUserOwnedStoreIds,
+  getUserOwnedEventIds,
+  isLegacyTestTicket,
+} from '../../utils/legacyCleanup';
+import { normalizePhoneDigits } from '../../utils/customerQr';
+import { VendorOrderPickupModal } from '../mall/VendorOrderPickupModal';
+import { ReservationDoc } from '../../types';
 
 export const PromoterDashboardModal: React.FC = () => {
   const {
@@ -45,6 +54,8 @@ export const PromoterDashboardModal: React.FC = () => {
     menuFood,
     menuAlcohol,
     menuSoftDrinks,
+    mallOrders,
+    markOrderReady,
     currentUser,
     currentRoute,
     setActiveModal,
@@ -58,6 +69,9 @@ export const PromoterDashboardModal: React.FC = () => {
   const [scanCode, setScanCode] = useState('');
   const [scanResult, setScanResult] = useState<string | null>(null);
   const [isQrScannerOpen, setIsQrScannerOpen] = useState<boolean>(false);
+  const [isOrderPickupOpen, setIsOrderPickupOpen] = useState<boolean>(false);
+  const [markingReadyId, setMarkingReadyId] = useState<string | null>(null);
+  const [scopedReservations, setScopedReservations] = useState<(ReservationDoc & { id: string })[]>([]);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => getPendingSyncCount());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -84,56 +98,138 @@ export const PromoterDashboardModal: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentRoute]);
 
-  // Scoped store for this promoter
-  const assignedStore =
-    stores.find((s) => s.id === currentUser.assignedStoreId) || stores[0];
-  const assignedStoreId = assignedStore?.id || currentUser.assignedStoreId || '';
+  // Strictly scoped stores & events owned/managed by this organizer (NEVER fall back to stores[0])
+  const ownedStoreIds = useMemo(
+    () => getUserOwnedStoreIds(currentUser, stores),
+    [currentUser, stores]
+  );
+  const ownedEventIds = useMemo(
+    () => getUserOwnedEventIds(currentUser, events, stores),
+    [currentUser, events, stores]
+  );
 
-  // Promoter / Organiser can ONLY see live status for HIS OWN events/venue (ONLY PAID TICKETS)
+  const assignedStore = useMemo(() => {
+    if (currentUser?.assignedStoreId) {
+      const explicit = stores.find((s) => s.id === currentUser.assignedStoreId);
+      if (explicit) return explicit;
+    }
+    return stores.find((s) => ownedStoreIds.has(s.id));
+  }, [stores, currentUser?.assignedStoreId, ownedStoreIds]);
+  const assignedStoreId = assignedStore?.id || currentUser?.assignedStoreId || '';
+
+  // Promoter / Organiser can ONLY see live status for THEIR OWN events/venue (ONLY PAID TICKETS)
   const storeTickets = useMemo(() => {
-    if (!assignedStoreId) return [];
-    return tickets.filter((t) => t.storeId === assignedStoreId && isTicketPaid(t));
-  }, [tickets, assignedStoreId]);
-
-  const organiserEvents = useMemo(() => {
-    return events.filter((ev) => {
-      if (isEventExpired(ev)) return false;
-      if (ev.creatorId && currentUser?.id && ev.creatorId === currentUser.id) return true;
-      if (assignedStoreId && ev.storeId === assignedStoreId) return true;
+    const activeEventSet = new Set(events.map((e) => e.id));
+    return tickets.filter((t) => {
+      if (isLegacyTestTicket(t, activeEventSet)) return false;
+      if (!isTicketPaid(t)) return false;
+      if (t.eventId && ownedEventIds.has(t.eventId)) return true;
+      if (t.storeId && ownedStoreIds.has(t.storeId)) return true;
       return false;
     });
-  }, [events, currentUser?.id, assignedStoreId]);
+  }, [tickets, events, ownedEventIds, ownedStoreIds]);
+
+  const organiserEvents = useMemo(() => {
+    return events.filter((ev) => !isEventExpired(ev) && ownedEventIds.has(ev.id));
+  }, [events, ownedEventIds]);
 
   const [addMenuType, setAddMenuType] = useState<'food' | 'alcohol' | 'softdrink' | null>(null);
 
+  const standaloneOrgStoreId = currentUser?.id ? `org_${currentUser.id}` : '';
   const storeMenuItems = useMemo(() => {
-    if (!assignedStoreId) return [];
-    const food = menuFood.filter(i => i.storeId === assignedStoreId);
-    const alcohol = menuAlcohol.filter(i => i.storeId === assignedStoreId);
-    const soft = menuSoftDrinks.filter(i => i.storeId === assignedStoreId);
-    return [...food, ...alcohol, ...soft];
-  }, [menuFood, menuAlcohol, menuSoftDrinks, assignedStoreId]);
+    const matchesOwner = (i: any) =>
+      (i.storeId && ownedStoreIds.has(i.storeId)) ||
+      (currentUser?.id && i.creatorId === currentUser.id) ||
+      (standaloneOrgStoreId && i.storeId === standaloneOrgStoreId);
 
-  // Live Attendance Counts for Promoter's Own Event
+    const food = menuFood.filter(matchesOwner);
+    const alcohol = menuAlcohol.filter(matchesOwner);
+    const soft = menuSoftDrinks.filter(matchesOwner);
+    return [...food, ...alcohol, ...soft];
+  }, [menuFood, menuAlcohol, menuSoftDrinks, ownedStoreIds, currentUser?.id, standaloneOrgStoreId]);
+
+  // Listen to food/drink reservations belonging ONLY to this organizer's events/stores
+  useEffect(() => {
+    if (!currentUser?.id || currentUser.id === 'guest_user') {
+      setScopedReservations([]);
+      return;
+    }
+    const unsub = onSnapshot(
+      collection(db, 'reservations'),
+      (snap) => {
+        const list: (ReservationDoc & { id: string })[] = [];
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as ReservationDoc;
+          const matchesEvent = Boolean(data.eventId && ownedEventIds.has(data.eventId));
+          const matchesStore = Boolean(
+            data.storeId &&
+              (ownedStoreIds.has(data.storeId) ||
+                (standaloneOrgStoreId && data.storeId === standaloneOrgStoreId))
+          );
+          if ((matchesEvent || matchesStore) && data.status !== 'refunded' && data.status !== 'cancelled') {
+            list.push({ id: docSnap.id, ...data });
+          }
+        });
+        setScopedReservations(list);
+      },
+      (err) => {
+        console.warn('Organizer reservations listener notice:', err);
+      }
+    );
+    return () => unsub();
+  }, [currentUser?.id, ownedEventIds, ownedStoreIds, standaloneOrgStoreId]);
+
+  // Paid pre-orders placed for this organizer's events / stores
+  const organizerMallOrders = useMemo(() => {
+    return mallOrders.filter((o) => {
+      if (o.status === 'cancelled') return false;
+      if (o.paymentStatus === 'WAITING FOR PAYMENT' || o.paymentStatus === 'PENDING_PAYMENT') return false;
+      if (o.eventId && ownedEventIds.has(o.eventId)) return true;
+      if (o.storeId && ownedStoreIds.has(o.storeId)) return true;
+      if (standaloneOrgStoreId && o.storeId === standaloneOrgStoreId) return true;
+      if (currentUser?.id && o.storeOwnerId === currentUser.id) return true;
+      return false;
+    });
+  }, [mallOrders, ownedEventIds, ownedStoreIds, standaloneOrgStoreId, currentUser?.id]);
+
+  // Deduplicated individual reservation records (for direct reserve items not already covered by mall_orders)
+  const standalonePreorderReservations = useMemo(() => {
+    const orderCodes = new Set(
+      organizerMallOrders.map((o) => o.collectionCode || o.orderNumber).filter(Boolean)
+    );
+    return scopedReservations.filter((r) => {
+      if (r.collectionCode && orderCodes.has(r.collectionCode)) return false;
+      return r.status === 'paid' || r.status === 'reserved' || r.status === 'reserved_for_event' || r.status === 'collected';
+    });
+  }, [scopedReservations, organizerMallOrders]);
+
+  const totalPreOrdersCount = organizerMallOrders.length + standalonePreorderReservations.length;
+
+  // Live Attendance Counts for Promoter's Own Event (paid tickets only, exact quantities)
   const liveStats = useMemo(() => {
+    let total = 0;
     let inside = 0;
     let outside = 0;
     let exited = 0;
     let totalRevenue = 0;
 
-    storeTickets.forEach((t) => {
-      const status: AttendanceStatus =
-        t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
-      if (status === 'INSIDE') inside++;
-      else if (status === 'EXITED') exited++;
-      else outside++;
+    storeTickets
+      .filter((t) => isTicketPaid(t))
+      .forEach((t) => {
+        const qty = getTicketQuantity(t);
+        total += qty;
+        const status: AttendanceStatus =
+          t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
+        if (status === 'INSIDE') inside += qty;
+        else if (status === 'EXITED') exited += qty;
+        else outside += qty;
 
-      const pNum = parseFloat(String(t.price || '').replace(/[^0-9.]/g, '')) || 0;
-      totalRevenue += pNum;
-    });
+        const pNum = parseFloat(String(t.price || '').replace(/[^0-9.]/g, '')) || 0;
+        totalRevenue += pNum;
+      });
 
     return {
-      total: storeTickets.length,
+      total,
       inside,
       outside,
       exited,
@@ -255,8 +351,11 @@ export const PromoterDashboardModal: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="bg-[#121212] rounded-2xl p-3.5 border border-white/5 mb-3.5 text-xs text-gray-400">
-            No venue assigned to your account yet. Ask an Admin to assign a venue.
+          <div className="bg-[#121212] rounded-2xl p-3.5 border border-white/5 mb-3.5 text-xs text-gray-300">
+            <span className="text-[10px] text-[#FACC15] font-extrabold uppercase tracking-wider block mb-0.5">
+              Event Organiser Mode
+            </span>
+            Manage your events, food &amp; drink pre-order menus, attendee tickets, and gate scans below.
           </div>
         )}
 
@@ -391,6 +490,146 @@ export const PromoterDashboardModal: React.FC = () => {
                   >
                     Delete
                   </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* CUSTOMER EVENT FOOD & DRINK PRE-ORDERS */}
+        <div className="bg-[#121212] rounded-2xl p-3.5 border border-purple-500/30 mb-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Utensils className="w-4 h-4 text-purple-400" />
+              <span className="text-[11px] font-black uppercase tracking-wider text-white">
+                Customer Pre-Orders ({totalPreOrdersCount})
+              </span>
+            </div>
+            {(assignedStoreId || standaloneOrgStoreId) && (
+              <button
+                type="button"
+                onClick={() => setIsOrderPickupOpen(true)}
+                className="bg-purple-500 hover:bg-purple-400 text-black font-black text-[10px] px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer transition"
+              >
+                <Camera className="w-3 h-3 stroke-[2.5]" />
+                <span>Scan Handover QR</span>
+              </button>
+            )}
+          </div>
+
+          {totalPreOrdersCount === 0 ? (
+            <p className="text-[11px] text-gray-400 bg-black/40 p-2.5 rounded-xl border border-white/5">
+              When a customer buys a ticket and places a food or drink pre-order for your event, their name, items, and order status appear here immediately.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+              {organizerMallOrders.map((ord) => {
+                const isDone = ord.status === 'collected' || ord.status === 'delivered';
+                const isReady = ord.status === 'ready_for_pickup';
+                const linkedEventTitle =
+                  ord.eventName ||
+                  (ord.eventId ? events.find((ev) => ev.id === ord.eventId)?.title : '') ||
+                  ord.storeName;
+                return (
+                  <div
+                    key={ord.id}
+                    className="bg-[#181818] border border-purple-500/25 rounded-xl p-2.5 space-y-1.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-black text-white truncate">
+                            {ord.customerName}
+                          </span>
+                          <span className="text-[9px] font-mono text-[#FACC15] bg-[#FACC15]/10 px-1.5 py-0.5 rounded">
+                            {ord.orderNumber}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-400 truncate">
+                          {maskPhoneNumber(ord.customerPhone || '')} • {linkedEventTitle}
+                        </p>
+                      </div>
+                      <span className="text-xs font-black text-emerald-400 shrink-0 tabular-nums">
+                        R{Number(ord.total || 0).toFixed(2)}
+                      </span>
+                    </div>
+
+                    <div className="bg-black/40 rounded-lg px-2.5 py-1.5 text-[11px] text-gray-200 space-y-0.5">
+                      {ord.items.map((it, idx) => (
+                        <div key={`${ord.id}-it-${idx}`} className="flex items-center justify-between gap-2">
+                          <span className="truncate">
+                            <strong>{it.quantity}×</strong> {it.name}
+                            {it.removedIngredients && it.removedIngredients.length > 0 && (
+                              <span className="text-rose-300 text-[10px] ml-1">
+                                (No {it.removedIngredients.join(', No ')})
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-gray-400 shrink-0">
+                            R{(Number(it.price || 0) * (it.quantity || 1)).toFixed(0)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <span
+                        className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          isDone
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : isReady
+                            ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+                            : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                        }`}
+                      >
+                        {isDone ? 'Collected ✅' : isReady ? 'Ready for Pickup' : 'New Pre-Order (Paid)'}
+                      </span>
+
+                      {!isDone && !isReady && (
+                        <button
+                          type="button"
+                          disabled={Boolean(markingReadyId)}
+                          onClick={async () => {
+                            setMarkingReadyId(ord.id);
+                            try {
+                              await markOrderReady(ord.id);
+                            } finally {
+                              setMarkingReadyId(null);
+                            }
+                          }}
+                          className="text-[10px] font-black bg-emerald-500 hover:bg-emerald-400 text-black px-2.5 py-1 rounded-lg cursor-pointer transition disabled:opacity-50"
+                        >
+                          {markingReadyId === ord.id ? 'Updating...' : 'Mark Ready'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {standalonePreorderReservations.map((res) => (
+                <div
+                  key={res.id}
+                  className="bg-[#181818] border border-white/10 rounded-xl p-2.5 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <span className="text-xs font-black text-white block truncate">
+                      {res.quantity || 1}× {res.itemName}
+                    </span>
+                    <span className="text-[10px] text-gray-400 block truncate">
+                      {res.customerName || 'Attendee'}{' '}
+                      {res.customerPhone ? `(${maskPhoneNumber(res.customerPhone)})` : ''} •{' '}
+                      {res.eventName || res.storeName}
+                    </span>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-xs font-black text-[#FACC15] block tabular-nums">
+                      R{Number(res.total || res.price || 0).toFixed(2)}
+                    </span>
+                    <span className="text-[9px] font-black uppercase text-emerald-400">
+                      {res.status}
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -537,37 +776,60 @@ export const PromoterDashboardModal: React.FC = () => {
           <span className="text-[10px] text-gray-400 font-extrabold uppercase tracking-wider block">
             Recent Attendee Movements ({storeTickets.length})
           </span>
-          <div className="max-h-40 overflow-y-auto space-y-1.5 pr-0.5">
-            {storeTickets.slice(0, 10).map((t) => {
+          <div className="max-h-48 overflow-y-auto space-y-1.5 pr-0.5">
+            {storeTickets.slice(0, 15).map((t) => {
               const status: AttendanceStatus =
                 t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
               const isInside = status === 'INSIDE';
               const isExited = status === 'EXITED';
+              const tPhoneDigits = normalizePhoneDigits(t.attendeePhone || t.customerPhone || '');
+              const matchingPreorder =
+                organizerMallOrders.find(
+                  (o) =>
+                    o.id === t.preorderOrderId ||
+                    (t.eventId &&
+                      o.eventId === t.eventId &&
+                      ((t.userId && o.customerId === t.userId) ||
+                        (t.customerQrId && o.customerQrId === t.customerQrId) ||
+                        (tPhoneDigits.length >= 7 && normalizePhoneDigits(o.customerPhone) === tPhoneDigits)))
+                ) || null;
+              const preorderLabel =
+                t.preorderSummary ||
+                (matchingPreorder
+                  ? matchingPreorder.items.map((it) => `${it.quantity}× ${it.name}`).join(', ')
+                  : '');
 
               return (
                 <div
                   key={t.id}
-                  className="bg-black/50 p-2 rounded-xl border border-white/5 flex items-center justify-between text-[11px]"
+                  className="bg-black/50 p-2 rounded-xl border border-white/5 space-y-1 text-[11px]"
                 >
-                  <div className="min-w-0 pr-2">
-                    <span className="font-bold text-white block truncate">
-                      {t.attendeeName || t.customerName}
-                    </span>
-                    <span className="text-[10px] text-gray-400 font-mono">
-                      {maskPhoneNumber(t.attendeePhone || t.customerPhone || '')} • {t.ticketId || t.bandCode}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 pr-2">
+                      <span className="font-bold text-white block truncate">
+                        {t.attendeeName || t.customerName}
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-mono">
+                        {maskPhoneNumber(t.attendeePhone || t.customerPhone || '')} • {t.ticketId || t.bandCode}
+                      </span>
+                    </div>
+                    <span
+                      className={`font-black uppercase text-[9px] px-2 py-0.5 rounded-full shrink-0 ${
+                        isInside
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : isExited
+                          ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                          : 'bg-zinc-800 text-gray-400'
+                      }`}
+                    >
+                      {status}
                     </span>
                   </div>
-                  <span
-                    className={`font-black uppercase text-[9px] px-2 py-0.5 rounded-full shrink-0 ${
-                      isInside
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        : isExited
-                        ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                        : 'bg-zinc-800 text-gray-400'
-                    }`}
-                  >
-                    {status}
-                  </span>
+                  {preorderLabel && (
+                    <div className="bg-purple-950/60 border border-purple-500/30 rounded-lg px-2 py-1 text-[10px] text-purple-200 font-semibold truncate">
+                      🍔 Pre-Order: {preorderLabel}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -646,8 +908,18 @@ export const PromoterDashboardModal: React.FC = () => {
         onTicketScanned={(t) => {
           setScanCode(t.bandCode || t.ticketId || t.id);
         }}
-        defaultEventId={assignedStore?.id || ''}
+        defaultEventId={organiserEvents[0]?.id || assignedStore?.id || ''}
       />
+
+      {/* Food Pre-Order Handover QR Scanner for Event Organiser */}
+      {(assignedStoreId || standaloneOrgStoreId) && (
+        <VendorOrderPickupModal
+          storeId={assignedStoreId || standaloneOrgStoreId}
+          storeName={assignedStore?.name || organiserEvents[0]?.title || 'Event Pre-Orders'}
+          isOpen={isOrderPickupOpen}
+          onClose={() => setIsOrderPickupOpen(false)}
+        />
+      )}
     </div>
   );
 };

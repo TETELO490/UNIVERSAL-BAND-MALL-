@@ -68,7 +68,9 @@ export const MallOrderSuccessModal: React.FC<MallOrderSuccessModalProps> = ({
                   <span>DELIVERY SERVICE MODULE</span>
                 </span>
                 <span className="bg-[#0D47A1] text-white text-[9px] font-extrabold px-2 py-0.5 rounded-full">
-                  {order.status === 'out_for_delivery'
+                  {order.status === 'delivered'
+                    ? 'DELIVERED'
+                    : order.status === 'out_for_delivery' || order.status === 'collected_by_driver'
                     ? 'ON THE WAY'
                     : order.deliveryDriverId
                     ? 'DRIVER ASSIGNED'
@@ -126,7 +128,7 @@ export const MallOrderSuccessModal: React.FC<MallOrderSuccessModalProps> = ({
               {isDelivery ? 'Customer Delivery PIN (Backup)' : 'Collection Code'}
             </span>
             <span className="text-xl font-black text-[#0D47A1] tracking-widest font-mono">
-              {isDelivery ? (order.deliveryPin || '123456') : order.collectionCode}
+              {isDelivery ? (order.deliveryPin || order.collectionCode || '—') : order.collectionCode}
             </span>
           </div>
 

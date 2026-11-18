@@ -2,6 +2,10 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 import { StoreMessage } from '../../types';
 import {
+  getUserOwnedStoreIds,
+  isUserVerifiedAdminSession,
+} from '../../utils/legacyCleanup';
+import {
   X,
   Bell,
   Sparkles,
@@ -42,6 +46,7 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
     mallOrders,
     markOrderReady,
     currentUser,
+    stores,
   } = useApp();
   const [copiedPhone, setCopiedPhone] = React.useState<string | null>(null);
   const [markingReadyId, setMarkingReadyId] = React.useState<string | null>(null);
@@ -49,21 +54,74 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
   if (!isOpen) return null;
 
   const roleLower = (currentUser?.role || '').toLowerCase();
-  const isOwner = roleLower === 'admin' || roleLower === 'promoter' || roleLower === 'owner' || roleLower === 'event organiser' || roleLower === 'organizer';
-  const isManager = (roleLower === 'manager' || roleLower === 'store manager') && (!storeId || currentUser?.assignedStoreId === storeId || currentUser?.assignedStoreName === storeName);
-  const canViewSales = isOwner || isManager || roleLower === 'admin' || roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer' || roleLower === 'store manager';
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const ownedStoreIds = getUserOwnedStoreIds(currentUser, stores);
+  const targetStore = stores.find((s) => s.id === storeId);
+  const uid = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
 
-  // Filter messages for this store
-  const messages = storeMessages.filter(
-    (m) => !storeId || m.storeId === storeId || m.storeName === storeName
+  const assignedToThisStore = Boolean(
+    storeId &&
+    ((currentUser?.assignedStoreId && currentUser.assignedStoreId === storeId) ||
+      (!currentUser?.assignedStoreId &&
+        currentUser?.assignedStoreName &&
+        storeName &&
+        currentUser.assignedStoreName === storeName))
   );
+  const ownsThisStore = Boolean(
+    storeId &&
+    (ownedStoreIds.has(storeId) ||
+      (uid && targetStore && (targetStore.ownerId === uid || targetStore.promoterId === uid)))
+  );
+
+  const isManager = Boolean(
+    (roleLower === 'manager' || roleLower === 'store manager') &&
+    (assignedToThisStore || ownsThisStore)
+  );
+  const isWorker = Boolean(
+    (roleLower === 'worker' || roleLower === 'staff' || roleLower === 'shop worker') &&
+    (assignedToThisStore || ownsThisStore)
+  );
+  const isOwner = Boolean(
+    isVerifiedAdmin ||
+    (ownsThisStore && !isManager && !isWorker) ||
+    (assignedToThisStore &&
+      (roleLower === 'promoter' ||
+        roleLower === 'event organiser' ||
+        roleLower === 'organizer' ||
+        roleLower === 'owner' ||
+        roleLower === 'seller' ||
+        roleLower === 'vendor'))
+  );
+  const isAuthorizedForStore = isVerifiedAdmin || isOwner || isManager || isWorker;
+  const canViewSales = isVerifiedAdmin || isOwner || isManager;
+
+  // Strict store-level isolation for messages & orders
+  const messages = isAuthorizedForStore
+    ? storeMessages.filter((m) =>
+        storeId
+          ? m.storeId
+            ? m.storeId === storeId
+            : Boolean(storeName) && m.storeName === storeName
+          : isVerifiedAdmin
+      )
+    : [];
 
   const todayOrders = messages.filter((m) => m.type === 'ORDER_TODAY');
 
-  // Daily Sales calculation (Accessible to Store Owner and Manager)
-  const storeOrdersList = mallOrders.filter(
-    (o) => !storeId || o.storeId === storeId || o.storeName === storeName
-  );
+  // Daily Sales calculation (Accessible to Store Owner and Manager) — paid non-cancelled orders only
+  const storeOrdersList = isAuthorizedForStore
+    ? mallOrders.filter(
+        (o) =>
+          (storeId
+            ? o.storeId
+              ? o.storeId === storeId
+              : Boolean(storeName) && o.storeName === storeName
+            : isVerifiedAdmin) &&
+          o.status !== 'cancelled' &&
+          o.paymentStatus !== 'WAITING FOR PAYMENT' &&
+          o.paymentStatus !== 'PENDING_PAYMENT'
+      )
+    : [];
   const todayDateStr = new Date().toISOString().split('T')[0];
   const todayMallOrders = storeOrdersList.filter(
     (o) => o.isTodayCollection || o.paidAt?.startsWith(todayDateStr)
@@ -71,8 +129,8 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
 
   const todayTotalRevenue = todayMallOrders.reduce((sum, o) => sum + (o.total || 0), 0);
   const todayTotalItems = todayMallOrders.reduce((sum, o) => sum + (o.totalQuantity || 0), 0);
-  const todayCollectedCount = todayMallOrders.filter((o) => o.status === 'collected').length;
-  const todayPendingCount = todayMallOrders.filter((o) => o.status !== 'collected').length;
+  const todayCollectedCount = todayMallOrders.filter((o) => o.status === 'collected' || o.status === 'delivered').length;
+  const todayPendingCount = todayMallOrders.filter((o) => o.status !== 'collected' && o.status !== 'delivered').length;
 
   const handleCopyPhone = (phone: string) => {
     navigator.clipboard?.writeText(phone);
@@ -124,6 +182,16 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
 
         {/* Content */}
         <div className="p-4 overflow-y-auto space-y-3.5">
+          {!isAuthorizedForStore ? (
+            <div className="p-8 text-center bg-red-50 border border-red-200 rounded-2xl space-y-2">
+              <ShieldAlert className="w-8 h-8 text-red-600 mx-auto" />
+              <p className="text-xs font-black text-red-900">Access Restricted</p>
+              <p className="text-[11px] text-red-700">
+                Only the assigned store owner, manager, or shop worker can view orders and customer details for {storeName}.
+              </p>
+            </div>
+          ) : (
+            <>
           {/* DAILY SALES TRACKER: ACCESSIBLE TO OWNER & MANAGER */}
           {canViewSales ? (
             <div className="bg-gradient-to-br from-gray-900 to-black text-white p-3.5 rounded-2xl border border-yellow-500/30 shadow-lg space-y-2">
@@ -417,6 +485,8 @@ export const StoreOwnerMessagesModal: React.FC<StoreOwnerMessagesModalProps> = (
                 );
               })}
             </div>
+          )}
+            </>
           )}
         </div>
 

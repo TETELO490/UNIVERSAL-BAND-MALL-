@@ -62,6 +62,7 @@ export const AdminEventsPage: React.FC = () => {
   const [generalPrice, setGeneralPrice] = useState<string>('');
   const [vipPrice, setVipPrice] = useState<string>('');
   const [kidsPrice, setKidsPrice] = useState<string>('');
+  const [ticketsAvailable, setTicketsAvailable] = useState<string>('200');
   const [eventLocation, setEventLocation] = useState<string>('Pretoria Venue');
   const [formError, setFormError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -79,6 +80,7 @@ export const AdminEventsPage: React.FC = () => {
     setGeneralPrice('');
     setVipPrice('');
     setKidsPrice('');
+    setTicketsAvailable('200');
     setEventLocation('Pretoria Venue');
     setFormError(null);
     setShowEventModal(true);
@@ -96,6 +98,11 @@ export const AdminEventsPage: React.FC = () => {
     setGeneralPrice(cleanNum(ev.generalPrice) || cleanNum(ev.price) || '');
     setVipPrice(cleanNum(ev.vipPrice));
     setKidsPrice(cleanNum(ev.kidsPrice));
+    setTicketsAvailable(
+      ev.ticketsAvailable !== undefined && ev.ticketsAvailable !== null
+        ? String(ev.ticketsAvailable)
+        : '200'
+    );
     setEventLocation(ev.location || 'Pretoria Venue');
     setFormError(null);
     setShowEventModal(true);
@@ -123,6 +130,11 @@ export const AdminEventsPage: React.FC = () => {
       setFormError('Please enter a valid general ticket price for this event.');
       return;
     }
+    const parsedLimit = Math.floor(Number(ticketsAvailable));
+    if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+      setFormError('Please enter a valid ticket sales limit (minimum 1).');
+      return;
+    }
     const vipNum = parseFloat(vipPrice.replace(/[^0-9.]/g, ''));
     const kidsNum = parseFloat(kidsPrice.replace(/[^0-9.]/g, ''));
 
@@ -137,6 +149,7 @@ export const AdminEventsPage: React.FC = () => {
         price: `R${genNum}`,
         vipPrice: !isNaN(vipNum) && vipNum > 0 ? vipNum : 0,
         kidsPrice: !isNaN(kidsNum) && kidsNum > 0 ? kidsNum : 0,
+        ticketsAvailable: parsedLimit,
         location: eventLocation.trim() || 'Pretoria Venue',
       });
       setIsSubmitting(false);
@@ -156,6 +169,8 @@ export const AdminEventsPage: React.FC = () => {
         price: `R${genNum}`,
         vipPrice: !isNaN(vipNum) && vipNum > 0 ? vipNum : 0,
         kidsPrice: !isNaN(kidsNum) && kidsNum > 0 ? kidsNum : 0,
+        ticketsAvailable: parsedLimit,
+        ticketsSold: 0,
         location: eventLocation.trim() || 'Pretoria Venue',
         storeId: '',
         category: 'Events',
@@ -618,6 +633,22 @@ export const AdminEventsPage: React.FC = () => {
                       className="w-full bg-[#1C1C1C] text-white p-2 rounded-xl border border-white/15 focus:border-[#FACC15] focus:outline-none font-mono"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1">
+                    🎟️ Ticket Sales Limit (Max Capacity) <span className="text-[#FACC15]">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    step="1"
+                    placeholder="e.g. 200"
+                    value={ticketsAvailable}
+                    onChange={(e) => setTicketsAvailable(e.target.value)}
+                    className="w-full bg-[#1C1C1C] text-white p-2 rounded-xl border border-white/15 focus:border-[#FACC15] focus:outline-none font-mono"
+                  />
                 </div>
               </div>
 

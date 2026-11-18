@@ -2,6 +2,8 @@ import { Ticket, AttendanceStatus, AttendanceLog } from '../types';
 import { db } from '../firebase';
 import { doc, setDoc } from 'firebase/firestore';
 
+import { isTicketPaid } from './ticketStatus';
+
 /**
  * Normalizes phone number into clean digits (e.g., "+27 82 123 4567" -> "0821234567" or "27821234567")
  */
@@ -124,26 +126,29 @@ export const calculateEventAttendanceStats = (
   eventTitle: string,
   tickets: Ticket[]
 ): EventAttendanceStats => {
-  const eventTickets = tickets.filter((t) => t.eventId === eventId);
+  const eventTickets = tickets.filter((t) => t.eventId === eventId && isTicketPaid(t));
+  let totalTickets = 0;
   let insideCount = 0;
   let outsideCount = 0;
   let exitedCount = 0;
 
   eventTickets.forEach((t) => {
+    const qty = Math.max(1, Math.floor(Number(t.quantity || 1) || 1));
+    totalTickets += qty;
     const status: AttendanceStatus = t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
     if (status === 'INSIDE') {
-      insideCount++;
+      insideCount += qty;
     } else if (status === 'EXITED') {
-      exitedCount++;
+      exitedCount += qty;
     } else {
-      outsideCount++;
+      outsideCount += qty;
     }
   });
 
   return {
     eventId,
     eventTitle,
-    totalTickets: eventTickets.length,
+    totalTickets,
     insideCount,
     outsideCount,
     exitedCount,

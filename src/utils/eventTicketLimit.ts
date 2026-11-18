@@ -37,6 +37,11 @@ export function parseLimitNum(val: any, defaultLimit: number = 100): number {
   return !isNaN(n) && n > 0 ? n : defaultLimit;
 }
 
+export function getTicketQuantity(t?: Pick<Ticket, 'quantity'> | null): number {
+  const q = Number(t?.quantity || 1);
+  return Number.isFinite(q) && q > 0 ? Math.floor(q) : 1;
+}
+
 export function getEventTierStats(event: EventItem | null | undefined, tickets: Ticket[] = []) {
   if (!event) {
     return {
@@ -53,38 +58,65 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
 
   const eventTickets = tickets.filter((t) => t.eventId === event.id && isTicketPaid(t));
 
+  const explicitLimit =
+    event.ticketsAvailable !== undefined &&
+    event.ticketsAvailable !== null &&
+    String(event.ticketsAvailable).trim() !== ''
+      ? Math.max(1, Math.floor(Number(event.ticketsAvailable)))
+      : null;
+  const hasExplicitLimit = explicitLimit !== null && Number.isFinite(explicitLimit);
+
   // Prices (empty = does not exist)
   const ebPrice = parsePriceNum(event.earlyBirdPrice);
   const genPrice = parsePriceNum(event.generalPrice || event.price);
   const ebVipPrice = parsePriceNum(event.earlyBirdVipPrice);
   const vipPrice = parsePriceNum(event.vipPrice);
 
-  const ebLimit = parseLimitNum(event.earlyBirdLimit, 50);
-  const genLimit = parseLimitNum(event.generalLimit || event.ticketsAvailable, 200);
-  const ebVipLimit = parseLimitNum(event.earlyBirdVipLimit, 20);
-  const vipLimit = parseLimitNum(event.vipLimit, 100);
+  const capByEventLimit = (val: number) =>
+    hasExplicitLimit ? Math.min(val, explicitLimit as number) : val;
 
-  // Sold counts per tier
-  const ebSold = eventTickets.filter(
-    (t) => t.ticketTier === 'Early Bird' || t.tierName === 'Early Bird'
-  ).length;
-  const genSold = eventTickets.filter(
-    (t) =>
-      t.ticketTier === 'General' ||
-      t.tierName === 'General' ||
-      (!t.ticketTier && ebPrice === 0)
-  ).length;
-  const ebVipSold = eventTickets.filter(
-    (t) => t.ticketTier === 'Early Bird VIP' || t.tierName === 'Early Bird VIP'
-  ).length;
-  const vipSold = eventTickets.filter(
-    (t) => t.ticketTier === 'VIP' || t.tierName === 'VIP'
-  ).length;
+  const ebLimit = capByEventLimit(
+    parseLimitNum(event.earlyBirdLimit, hasExplicitLimit ? Math.min(50, explicitLimit as number) : 50)
+  );
+  const genLimit = capByEventLimit(
+    parseLimitNum(event.generalLimit || event.ticketsAvailable, hasExplicitLimit ? (explicitLimit as number) : 200)
+  );
+  const ebVipLimit = capByEventLimit(
+    parseLimitNum(event.earlyBirdVipLimit, hasExplicitLimit ? Math.min(20, explicitLimit as number) : 20)
+  );
+  const vipLimit = capByEventLimit(
+    parseLimitNum(event.vipLimit, hasExplicitLimit ? (explicitLimit as number) : 100)
+  );
+
+  // Sold counts per tier (summing quantity on each approved paid ticket)
+  const getTierLower = (t: Ticket) =>
+    String(t.ticketTier || t.tierName || '').trim().toLowerCase();
+
+  const ebSold = eventTickets
+    .filter((t) => getTierLower(t) === 'early bird')
+    .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+  const ebVipSold = eventTickets
+    .filter((t) => getTierLower(t) === 'early bird vip')
+    .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+  const vipSold = eventTickets
+    .filter((t) => {
+      const tl = getTierLower(t);
+      return tl === 'vip' || tl === 'vvip';
+    })
+    .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+  const genSold = eventTickets
+    .filter((t) => {
+      const tl = getTierLower(t);
+      return tl !== 'early bird' && tl !== 'early bird vip' && tl !== 'vip' && tl !== 'vvip';
+    })
+    .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+
+  const totalSold = ebSold + genSold + ebVipSold + vipSold;
+  const overallRemaining = hasExplicitLimit
+    ? Math.max(0, (explicitLimit as number) - totalSold)
+    : Number.MAX_SAFE_INTEGER;
 
   // Normal Side Sequential Logic:
-  // - If BOTH Early Bird + General prices exist: At start show ONLY Early Bird.
-  // - When Early Bird sold = limit (50/50), Early Bird automatically disappears, then show General.
-  // - When General sold = limit (200/200), General disappears / shows SOLD OUT.
   let showEb = false;
   let showGen = false;
 
@@ -101,9 +133,6 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
   }
 
   // VIP Side Sequential Logic:
-  // - If NO VIP price AND NO Early Bird VIP price entered -> Do NOT show VIP section at all.
-  // - If BOTH Early Bird VIP + VIP prices exist: At start show ONLY Early Bird VIP.
-  // - When Early Bird VIP sold = limit (20/20), Early Bird VIP automatically disappears, then show VIP.
   let showEbVip = false;
   let showVip = false;
 
@@ -121,10 +150,10 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
     }
   }
 
-  const ebRem = Math.max(0, ebLimit - ebSold);
-  const genRem = Math.max(0, genLimit - genSold);
-  const ebVipRem = Math.max(0, ebVipLimit - ebVipSold);
-  const vipRem = Math.max(0, vipLimit - vipSold);
+  const ebRem = Math.min(overallRemaining, Math.max(0, ebLimit - ebSold));
+  const genRem = Math.min(overallRemaining, Math.max(0, genLimit - genSold));
+  const ebVipRem = Math.min(overallRemaining, Math.max(0, ebVipLimit - ebVipSold));
+  const vipRem = Math.min(overallRemaining, Math.max(0, vipLimit - vipSold));
 
   const earlyBirdTier: TicketTierInfo | null =
     ebPrice > 0
@@ -138,7 +167,7 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
           soldCount: ebSold,
           maxLimit: ebLimit,
           remaining: ebRem,
-          isSoldOut: ebRem <= 0,
+          isSoldOut: overallRemaining <= 0 || ebRem <= 0,
           isVisible: showEb,
         }
       : null;
@@ -155,7 +184,7 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
           soldCount: genSold,
           maxLimit: genLimit,
           remaining: genRem,
-          isSoldOut: genRem <= 0,
+          isSoldOut: overallRemaining <= 0 || genRem <= 0,
           isVisible: showGen,
         }
       : null;
@@ -172,7 +201,7 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
           soldCount: ebVipSold,
           maxLimit: ebVipLimit,
           remaining: ebVipRem,
-          isSoldOut: ebVipRem <= 0,
+          isSoldOut: overallRemaining <= 0 || ebVipRem <= 0,
           isVisible: showEbVip,
         }
       : null;
@@ -189,14 +218,13 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
           soldCount: vipSold,
           maxLimit: vipLimit,
           remaining: vipRem,
-          isSoldOut: vipRem <= 0,
+          isSoldOut: overallRemaining <= 0 || vipRem <= 0,
           isVisible: showVip,
         }
       : null;
 
   const allTiers = [earlyBirdTier, generalTier, earlyBirdVipTier, vipTier].filter(Boolean) as TicketTierInfo[];
   const availableTiers = allTiers.filter((t) => t.isVisible && !t.isSoldOut);
-  const totalSold = ebSold + genSold + ebVipSold + vipSold;
 
   return {
     earlyBird: earlyBirdTier,
@@ -206,7 +234,9 @@ export function getEventTierStats(event: EventItem | null | undefined, tickets: 
     allTiers,
     availableTiers,
     totalSold,
-    isCompletelySoldOut: allTiers.length > 0 && allTiers.every((t) => t.isSoldOut || (t.id === 'general' && ebPrice > 0 && ebRem > 0)),
+    isCompletelySoldOut:
+      (hasExplicitLimit && overallRemaining <= 0) ||
+      (allTiers.length > 0 && allTiers.every((t) => t.isSoldOut || (t.id === 'general' && ebPrice > 0 && ebRem > 0))),
   };
 }
 
@@ -215,15 +245,27 @@ export function getEventTicketStats(
   tickets: Ticket[] = []
 ): EventTicketStats {
   const stats = getEventTierStats(event, tickets);
-  const totalMaxLimit = stats.allTiers.reduce((acc, t) => acc + t.maxLimit, 0);
-  const remaining = stats.allTiers.reduce((acc, t) => acc + t.remaining, 0);
+  const explicitLimit =
+    event?.ticketsAvailable !== undefined &&
+    event?.ticketsAvailable !== null &&
+    String(event.ticketsAvailable).trim() !== ''
+      ? Number(event.ticketsAvailable)
+      : null;
+  const tierMax = stats.allTiers.reduce((max, t) => Math.max(max, t.maxLimit), 0);
+  const maxLimit =
+    explicitLimit !== null && Number.isFinite(explicitLimit) && explicitLimit > 0
+      ? Math.floor(explicitLimit)
+      : tierMax > 0
+      ? tierMax
+      : 200;
+  const remaining = Math.max(0, maxLimit - stats.totalSold);
 
   return {
     soldCount: stats.totalSold,
-    maxLimit: totalMaxLimit > 0 ? totalMaxLimit : (event?.ticketsAvailable ? Number(event.ticketsAvailable) : null),
-    remaining: totalMaxLimit > 0 ? remaining : null,
-    hasLimit: stats.allTiers.length > 0 || (event?.ticketsAvailable !== undefined),
-    isSoldOut: stats.allTiers.length > 0 ? stats.allTiers.every((t) => t.isSoldOut) : false,
+    maxLimit,
+    remaining,
+    hasLimit: true,
+    isSoldOut: stats.totalSold >= maxLimit,
     tiers: stats.allTiers,
     availableTiers: stats.availableTiers,
   };

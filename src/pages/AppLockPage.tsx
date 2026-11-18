@@ -22,6 +22,8 @@ import {
   getMultiLockConfig,
   verifyPasswordLock,
   verifyPatternLock,
+  hasUserConfiguredLock,
+  isRealCredentialId,
   UnlockMethod,
   MultiLockConfig,
 } from '../utils/multiLockSecurity';
@@ -29,11 +31,13 @@ import {
 const PIN_LENGTH = 6;
 
 export const AppLockPage: React.FC = () => {
-  const { unlockApp, attemptsLeft, resetPinWithEmail, currentPin, currentUser, setActiveModal } = useApp();
+  const { unlockApp, attemptsLeft, resetPinWithEmail, currentPin, currentUser, setActiveModal, signOutUser } = useApp();
 
   const isPrivileged =
     currentUser?.role === 'Admin' ||
     currentUser?.role === 'Promoter' ||
+    currentUser?.role === 'Event Organiser' ||
+    currentUser?.role === 'organizer' ||
     isAuthorizedAdminEmail(currentUser?.email) ||
     localStorage.getItem('ub_admin_session') === 'true';
 
@@ -42,6 +46,28 @@ export const AppLockPage: React.FC = () => {
     const cfg = getMultiLockConfig(currentUser?.email);
     return cfg.primaryMethod || 'pin';
   });
+
+  const hasPin = Boolean(currentPin && currentPin.trim().length >= 4);
+  const hasPassword = Boolean(config.passwordHash && config.passwordEnabled);
+  const hasPattern = Boolean(config.patternHash && config.patternEnabled);
+  const hasFingerprint = Boolean(
+    config.fingerprintEnrolled &&
+    config.fingerprintEnabled &&
+    isRealCredentialId(config.fingerprintCredentialId)
+  );
+  const hasAnyLock =
+    hasPin ||
+    hasPassword ||
+    hasPattern ||
+    hasFingerprint ||
+    hasUserConfiguredLock(currentUser?.email, currentUser);
+
+  // If user has not configured any lock, NEVER show lock screen: immediately unlock and exit!
+  useEffect(() => {
+    if (!hasAnyLock) {
+      unlockApp('', true);
+    }
+  }, [hasAnyLock, unlockApp]);
 
   useEffect(() => {
     const cfg = getMultiLockConfig(currentUser?.email);
@@ -86,8 +112,20 @@ export const AppLockPage: React.FC = () => {
     (entered: string) => {
       if (!entered) return;
       if (!currentPin) {
-        triggerError('No PIN configured yet. Unlock using Fingerprint, Password, or Pattern.');
-        setTimeout(() => setPinInput(''), 450);
+        if (hasPassword) {
+          switchMethod('password');
+          return;
+        }
+        if (hasPattern) {
+          switchMethod('pattern');
+          return;
+        }
+        if (hasFingerprint) {
+          switchMethod('fingerprint');
+          return;
+        }
+        // Account has no lock configured: unlock immediately and exit
+        unlockApp('', true);
         return;
       }
       const success = unlockApp(entered);
@@ -101,7 +139,7 @@ export const AppLockPage: React.FC = () => {
         setUnlockSuccess(true);
       }
     },
-    [currentPin, unlockApp]
+    [currentPin, hasPassword, hasPattern, hasFingerprint, unlockApp]
   );
 
   useEffect(() => {
@@ -526,7 +564,7 @@ export const AppLockPage: React.FC = () => {
           </div>
         )}
 
-        <div className="flex items-center justify-center pt-2.5 mt-2 border-t border-white/5 text-[11px] text-gray-400">
+        <div className="flex items-center justify-between pt-2.5 mt-2 border-t border-white/5 text-[11px] text-gray-400">
           <button
             type="button"
             onClick={handleForgotPin}
@@ -535,6 +573,17 @@ export const AppLockPage: React.FC = () => {
           >
             <HelpCircle className="w-3.5 h-3.5" />
             <span>{isResetting ? 'Sending...' : 'Forgot PIN / Locks?'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={async () => {
+              unlockApp('', true);
+              await signOutUser();
+            }}
+            className="hover:text-rose-400 transition flex items-center gap-1 cursor-pointer py-0.5 font-bold"
+          >
+            <span>Log Out / Switch</span>
           </button>
         </div>
 

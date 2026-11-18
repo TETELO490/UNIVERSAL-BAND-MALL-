@@ -15,6 +15,7 @@ import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ReservationDoc } from '../types';
 import { isAlcoholItem } from '../utils/ageHelper';
+import { doesUserOwnReservation } from '../utils/legacyCleanup';
 import {
   Utensils,
   Store,
@@ -50,19 +51,21 @@ export const ReservedPage: React.FC = () => {
   const walletId = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
 
   useEffect(() => {
-    // Query Firestore reservations collection
-    const q = query(
-      collection(db, 'reservations')
-    );
+    if (!walletId) {
+      setAllReservations([]);
+      setLoading(false);
+      return;
+    }
+
+    const q = query(collection(db, 'reservations'));
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
         const list: (ReservationDoc & { id: string })[] = [];
-        console.log('Reservations snapshot size:', snapshot.size);
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as ReservationDoc;
-          console.log('Reservation data:', data, 'walletId:', data.walletId);
+          if (!doesUserOwnReservation(data, currentUser)) return;
           list.push({
             id: docSnap.id,
             ...data,
@@ -92,7 +95,7 @@ export const ReservedPage: React.FC = () => {
     );
 
     return () => unsubscribe();
-  }, [walletId]);
+  }, [walletId, currentUser?.id, currentUser?.idNumber, currentUser?.phone, currentUser?.customerQrId]);
 
   // Active items: filter to show only status == "paid" or "reserved"
   const activeItems = allReservations.filter(
@@ -271,7 +274,9 @@ export const ReservedPage: React.FC = () => {
             <Utensils className="w-4 h-4 text-[#FACC15]" />
             <span>Reserved Food & Drinks</span>
           </h1>
-          <p className="text-[10px] text-gray-400">Wallet: {walletId}</p>
+          <p className="text-[10px] text-gray-400">
+            {walletId ? `${currentUser.fullName || currentUser.name}` : 'Personal Reservations'}
+          </p>
         </div>
 
         <button

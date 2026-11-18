@@ -199,11 +199,7 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
         const friendlyMsg = formatGeolocationError(err);
         console.warn("GPS notice on checkout:", friendlyMsg);
 
-        const fallbackArea = storeLocation && storeLocation !== 'Universal Band Mall'
-          ? `${storeLocation}, Polokwane`
-          : 'Polokwane CBD, Limpopo (-23.9045, 29.4688)';
-        setDeliveryAddress(fallbackArea);
-        setLocationStatusMsg(`📍 Allow PRECISE location + Turn on Location + Go outside`);
+        setLocationStatusMsg(`📍 GPS unavailable (${friendlyMsg}). Tap "Pick on Map" or type your delivery address.`);
         setIsMapPickerOpen(true);
         setIsDetectingLocation(false);
       },
@@ -219,7 +215,7 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
 
   const totalQuantity = cartSummary.totalQuantity;
   const subtotal = cartSummary.subtotal;
-  const deliveryFee = checkoutType === 'DELIVERY' ? 25 : 0;
+  const deliveryFee = checkoutType === 'DELIVERY' ? MALL_FEES.DEFAULT_DELIVERY_FEE : 0;
   const platformFee = cartSummary.platformFee;
   const total = cartSummary.total + deliveryFee;
 
@@ -304,15 +300,8 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
       return;
     }
 
-    // Direct Instant Payment handling / Split payment top-up
-    if (externalAmount > 0) {
-      const topUpMemo = walletDeduction > 0
-        ? `${paymentMethod} Split Payment (Wallet R${walletDeduction.toFixed(2)} + ${paymentMethod} R${externalAmount.toFixed(2)})`
-        : `${paymentMethod} Direct Checkout`;
-      await topUpWallet(externalAmount, topUpMemo);
-    }
-
     setIsSubmitting(true);
+    let toppedUpExternal = 0;
     try {
       localStorage.setItem('ub_checkout_phone', cleanPhone);
 
@@ -323,6 +312,15 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
         try {
           realLoc = await getRealLocationForOrder();
         } catch (_) {}
+      }
+
+      // Direct Instant Payment handling / Split payment top-up (only after all pre-checks & GPS complete)
+      if (externalAmount > 0) {
+        const topUpMemo = walletDeduction > 0
+          ? `${paymentMethod} Split Payment (Wallet R${walletDeduction.toFixed(2)} + ${paymentMethod} R${externalAmount.toFixed(2)})`
+          : `${paymentMethod} Direct Checkout`;
+        await topUpWallet(externalAmount, topUpMemo);
+        toppedUpExternal = externalAmount;
       }
 
       const res = await createMallOrder({
@@ -343,8 +341,10 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
         gpsAccuracy: realLoc?.accuracy,
       });
 
-
       if (!res.success || !res.order) {
+        if (toppedUpExternal > 0) {
+          await topUpWallet(-toppedUpExternal, 'Checkout Failed Rollback');
+        }
         setErrorMessage(res.error || 'Failed to place order. Please try again.');
         setIsSubmitting(false);
         return;
@@ -355,6 +355,9 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
         onOrderCreated(res.order);
       }
     } catch (err: any) {
+      if (toppedUpExternal > 0) {
+        await topUpWallet(-toppedUpExternal, 'Checkout Error Rollback').catch(() => {});
+      }
       setErrorMessage(err?.message || 'Error processing checkout.');
     } finally {
       setIsSubmitting(false);
@@ -848,8 +851,7 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
                         { label: '🎓 Mankweng (Turfloop)', val: 'Mankweng / Turfloop (-23.8967, 29.7289)' },
                         { label: '🏡 Flora Park', val: 'Flora Park, Polokwane (-23.9161, 29.4820)' },
                         { label: '🛍️ Mall of the North', val: 'Mall of the North, Bendor (-23.8825, 29.4975)' },
-                        { label: '🌴 Marbi Hall', val: 'Marbi Hall Venue (-23.9010, 29.4650)' },
-                        { label: '🌊 Mphela Resort', val: 'Mphela Resort Area (-23.8200, 29.5500)' },
+                        { label: '🏙️ Polokwane Extensions', val: 'Polokwane Extensions (-23.9010, 29.4650)' },
                       ].map((chip) => (
                         <button
                           key={chip.label}

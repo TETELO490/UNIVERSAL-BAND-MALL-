@@ -41,7 +41,7 @@ export default function FoodCard({
   reservation,
   onReservationUpdated,
 }: FoodCardProps) {
-  const { currentUser, topUpWallet, setActiveModal, stores, events } = useApp();
+  const { currentUser, addWalletTransaction, setActiveModal, stores, events } = useApp();
   const [loading, setLoading] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [removedIngredients, setRemovedIngredients] = useState<string[]>([]);
@@ -55,14 +55,14 @@ export default function FoodCard({
 
   const price = parsePrice(item.price);
 
-  // Determine store and event metadata
-  const store = stores.find((s) => s.id === item.storeId) || stores[0];
+  // Determine store and event metadata without cross-store leakage
+  const store = item.storeId ? stores.find((s) => s.id === item.storeId) : undefined;
   const storeId = store?.id || item.storeId || '';
-  const storeName = store?.name || 'Venue Store';
+  const storeName = store?.name || item.storeName || 'Event Venue';
 
-  const matchedEvent = events.find((e) => e.storeId === storeId) || events[0];
+  const matchedEvent = storeId ? events.find((e) => e.storeId === storeId) : undefined;
   const eventId = matchedEvent?.id || '';
-  const eventName = matchedEvent?.title || 'Venue Event';
+  const eventName = matchedEvent?.title || '';
 
   const rawEventDate = matchedEvent?.date || '';
   const eventDateObj = rawEventDate ? new Date(rawEventDate) : null;
@@ -85,7 +85,9 @@ export default function FoodCard({
     setFeedback(null);
     try {
       const wRef = doc(db, 'wallets', walletId);
+      const uRef = doc(db, 'users', walletId);
       const rRef = doc(collection(db, 'reservations'));
+      const txRef = doc(collection(db, 'transactions'));
 
       // Ensure wallet doc exists in Firestore with user balance if missing
       const wSnap = await getDoc(wRef);
@@ -97,20 +99,18 @@ export default function FoodCard({
         });
       }
 
-      await runTransaction(db, async (t) => {
+      const newBalance = await runTransaction(db, async (t) => {
         const w = await t.get(wRef);
-        const curBal = w.exists() ? w.data().balance : currentUser.walletBalance;
+        const curBal = w.exists() ? Number(w.data().balance ?? 0) : currentUser.walletBalance;
 
-        // Check balance >= item.price
         if (curBal < price) {
           throw new Error('low funds');
         }
 
-        // Update balance with increment(-price)
-        t.update(wRef, { balance: increment(-price) });
+        const nextBal = Math.round(Math.max(0, curBal - price) * 100) / 100;
+        t.update(wRef, { balance: increment(-price), updatedAt: new Date().toISOString() });
+        t.set(uRef, { walletBalance: nextBal }, { merge: true });
 
-        // Create reservations doc with required fields:
-        // {walletId, storeId, storeName, eventId, eventName, itemId, itemName, total: price, status: "paid", paidAt: serverTimestamp()}
         t.set(rRef, {
           walletId,
           storeId,
@@ -121,16 +121,41 @@ export default function FoodCard({
           itemName: item.name,
           total: price,
           status: 'paid',
+          paymentStatus: 'PAID',
           paidAt: serverTimestamp(),
           eventDate: rawEventDate,
           ingredients: item.ingredients || [],
           allowIngredientRemoval: item.allowIngredientRemoval,
           removedIngredients,
         });
+
+        t.set(txRef, {
+          userId: walletId,
+          customerId: currentUser.idNumber || walletId,
+          customerName: currentUser.fullName || currentUser.name,
+          type: item.category === 'drink' ? 'drink' : 'food',
+          description: `${item.name} at ${storeName}`,
+          amount: price,
+          storeId,
+          storeName,
+          paymentMethod: 'Wallet',
+          status: 'Paid',
+          reference: rRef.id,
+          timestamp: serverTimestamp(),
+          createdAt: new Date().toISOString(),
+        });
+
+        return nextBal;
       });
 
-      // Balance must decrease instantly after reserve
-      await topUpWallet(-price);
+      localStorage.setItem('wallet_balance', String(newBalance));
+      addWalletTransaction({
+        type: 'purchase',
+        title: `${item.name} (${storeName})`,
+        subtitle: isPastOrEventDay ? 'Counter Pickup' : `Reserved for ${eventName}`,
+        amount: -price,
+        reference: rRef.id,
+      });
 
       setFeedback({
         message: isPastOrEventDay

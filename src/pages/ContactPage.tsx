@@ -111,7 +111,7 @@ export const ContactPage: React.FC = () => {
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. Thabo Ndlovu"
+                    placeholder="Enter your full name"
                     className="w-full px-3 py-2 bg-black/60 border border-white/10 rounded-xl text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#FACC15]"
                   />
                 </div>

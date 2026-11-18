@@ -9,6 +9,7 @@ import { FloatingSupportButton } from './components/support/FloatingSupportButto
 import { PermissionNeededNotice } from './components/PermissionNeededNotice';
 import { PaymentAlarmOverlay } from './components/PaymentAlarmOverlay';
 import { isAuthorizedAdminEmail } from './utils/cryptoHelper';
+import { hasUserConfiguredLock } from './utils/multiLockSecurity';
 
 // Statically import the default landing page for immediate instant rendering
 import { StoresPage } from './pages/StoresPage';
@@ -130,6 +131,8 @@ const AppContent: React.FC = () => {
     handleAdminSecuritySuccess,
     isSupportModalOpen,
     isAppReady,
+    currentPin,
+    unlockApp,
   } = useApp();
 
   const isUserLoggedIn = Boolean(
@@ -137,13 +140,16 @@ const AppContent: React.FC = () => {
     (currentUser?.isRegistered && currentUser?.id !== 'guest_user')
   );
 
+  const roleLower = (currentUser?.role || '').toLowerCase();
   const isAdmin = Boolean(
     isUserLoggedIn &&
-    (currentUser?.role === 'Admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+    (roleLower === 'admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
     localStorage.getItem('ub_admin_session') === 'true' &&
     sessionStorage.getItem('ub_admin_5locks_passed') === 'true'
   );
-  const isPromoter = isUserLoggedIn && currentUser?.role === 'Promoter';
+  const isPromoter =
+    isUserLoggedIn &&
+    (roleLower === 'promoter' || roleLower === 'event organiser' || roleLower === 'organizer');
   const isStaff = isAdmin || isPromoter;
 
   const hasRegistered = currentUser?.isRegistered || localStorage.getItem('ub_has_registered') === 'true';
@@ -152,9 +158,18 @@ const AppContent: React.FC = () => {
     return <LoadingScreen />;
   }
 
-  // If locked, show the App Lock screen
-  // Removed default lock for better onboarding
+  // If locked, show the App Lock screen ONLY if the account actually has a lock configured
   if (currentRoute === '/app-lock') {
+    const hasLock =
+      Boolean(currentPin && currentPin.trim().length >= 4) ||
+      hasUserConfiguredLock(currentUser?.email, currentUser);
+    if (!hasLock) {
+      return (
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <StoresPage />
+        </Suspense>
+      );
+    }
     return (
       <Suspense fallback={<ViewLoadingFallback />}>
         <AppLockPage />
@@ -244,7 +259,7 @@ const AppContent: React.FC = () => {
       return isAdmin ? <AdminConsoleModal /> : <StoresPage />;
     }
     if (currentRoute === '/dashboard' || currentRoute.startsWith('/dashboard')) {
-      return isAdmin ? <AdminConsoleModal /> : <PromoterDashboardModal />;
+      return isAdmin ? <AdminConsoleModal /> : isStaff ? <PromoterDashboardModal /> : <ProfilePage />;
     }
     if (currentRoute === '/promoter' || currentRoute.startsWith('/promoter')) {
       return isStaff ? <PromoterDashboardModal /> : <ProfilePage />;

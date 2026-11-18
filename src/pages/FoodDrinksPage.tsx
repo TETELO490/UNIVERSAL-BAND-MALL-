@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { db } from '../firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { ReservationDoc, MallOrder, CartItem } from '../types';
+import { doesUserOwnReservation, doesUserOwnMallOrder } from '../utils/legacyCleanup';
 import {
   Utensils,
   Wine,
@@ -51,7 +52,7 @@ export const FoodDrinksPage: React.FC = () => {
   const currentId = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
   const currentIdNum = currentUser?.idNumber;
 
-  // Real-time listener for reservations from Firestore where customerId = current user
+  // Real-time listener for reservations belonging strictly to the current user
   useEffect(() => {
     if (!currentId && !currentIdNum) {
       setReservations([]);
@@ -64,13 +65,7 @@ export const FoodDrinksPage: React.FC = () => {
         const list: (ReservationDoc & { id: string })[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as ReservationDoc;
-          const isUserItem =
-            data.walletId === currentId ||
-            data.customerId === currentId ||
-            (currentIdNum && data.customerId === currentIdNum) ||
-            data.beneficiaryId === currentId;
-
-          if (isUserItem) {
+          if (doesUserOwnReservation(data, currentUser)) {
             list.push({
               id: docSnap.id,
               ...data,
@@ -100,18 +95,19 @@ export const FoodDrinksPage: React.FC = () => {
     );
 
     return () => unsub();
-  }, [currentId, currentIdNum]);
+  }, [currentId, currentIdNum, currentUser?.phone, currentUser?.customerQrId]);
 
-  // Customer's active delivery orders
+  // Customer's active delivery orders (strictly owned by current user)
   const activeCustomerDeliveries = useMemo(() => {
+    if (!currentId) return [];
     return mallOrders.filter(
       (o) =>
         o.collectionMethod === 'DELIVERY' &&
-        (o.customerId === currentId || (currentUser?.phone && o.customerPhone === currentUser.phone)) &&
+        doesUserOwnMallOrder(o, currentUser) &&
         o.status !== 'delivered' &&
         o.status !== 'cancelled'
     );
-  }, [mallOrders, currentId, currentUser?.phone]);
+  }, [mallOrders, currentId, currentUser]);
 
   // Active shopping carts across stores
   const cartEntries = useMemo(() => {
@@ -234,10 +230,12 @@ export const FoodDrinksPage: React.FC = () => {
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-black text-white">{ord.storeName}</span>
                     <span className="text-[9px] font-bold px-1.5 py-0.5 bg-blue-500 text-white rounded uppercase">
-                      {ord.status === 'out_for_delivery'
+                      {ord.status === 'out_for_delivery' || ord.status === 'collected_by_driver'
                         ? 'On The Way'
                         : ord.deliveryDriverName
                         ? 'Driver Assigned'
+                        : ord.status === 'ready_for_pickup'
+                        ? 'Ready For Driver'
                         : 'Preparing'}
                     </span>
                   </div>

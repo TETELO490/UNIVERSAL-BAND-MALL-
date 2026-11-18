@@ -76,7 +76,7 @@ export const AboutPage: React.FC = () => {
                 <div className="space-y-1">
                   <h3 className="text-xs font-bold text-white">Venue & Food Stall Integration</h3>
                   <p className="text-[11px] text-gray-400 leading-relaxed">
-                    Official partnerships with venues like Florence Palm and Mphela Resort to facilitate pre-ordering and safe cashless bar transactions.
+                    Official partnerships with verified local venues and event organisers to facilitate pre-ordering and safe cashless bar transactions.
                   </p>
                 </div>
               </div>

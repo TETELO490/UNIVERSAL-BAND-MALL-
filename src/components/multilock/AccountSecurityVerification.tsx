@@ -154,7 +154,20 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
           setDbPasswordHash(passwordHash || null);
           setDbFingerprintCredId(fingerprintCredId || null);
           setConfig(localCfg);
-          setActiveMethod('fingerprint');
+
+          // If no security locks were configured for this account, grant access immediately!
+          if (!patternHash && !passwordHash && !fingerprintCredId) {
+            onSuccess();
+            return;
+          }
+
+          if (fingerprintCredId) {
+            setActiveMethod('fingerprint');
+          } else if (patternHash) {
+            setActiveMethod('pattern');
+          } else {
+            setActiveMethod('password');
+          }
         }
       } finally {
         if (isMounted) setLoadingConfig(false);
@@ -166,17 +179,25 @@ export const AccountSecurityVerification: React.FC<AccountSecurityVerificationPr
     return () => {
       isMounted = false;
     };
-  }, [pendingUser.id, targetEmail, isRolePrivileged]);
+  }, [pendingUser.id, targetEmail, isRolePrivileged, onSuccess]);
 
-  // Determine required methods
-  // For promoter & admin (or when configured in account), require Fingerprint, Pattern, and Password
-  const requiresFingerprint = true;
-  const requiresPattern = true;
-  const requiresPassword = true;
+  // Determine required methods - ONLY require methods that were actually configured for this account!
+  const requiresFingerprint = Boolean(
+    dbFingerprintCredId || (config.fingerprintEnabled && isRealCredentialId(config.fingerprintCredentialId))
+  );
+  const requiresPattern = Boolean(dbPatternHash || (config.patternEnabled && config.patternHash));
+  const requiresPassword = Boolean(dbPasswordHash || (config.passwordEnabled && config.passwordHash));
 
-  const totalRequired = 3;
-  const completedCount = (fingerprintDone ? 1 : 0) + (patternDone ? 1 : 0) + (passwordDone ? 1 : 0);
-  const allCompleted = fingerprintDone && patternDone && passwordDone;
+  const totalRequired =
+    (requiresFingerprint ? 1 : 0) + (requiresPattern ? 1 : 0) + (requiresPassword ? 1 : 0) || 1;
+  const completedCount =
+    (fingerprintDone && requiresFingerprint ? 1 : 0) +
+    (patternDone && requiresPattern ? 1 : 0) +
+    (passwordDone && requiresPassword ? 1 : 0);
+  const allCompleted =
+    (!requiresFingerprint || fingerprintDone) &&
+    (!requiresPattern || patternDone) &&
+    (!requiresPassword || passwordDone);
 
   // Auto-advance to next required method when one finishes
   const advanceToNext = (justFinished: SecurityMethod) => {

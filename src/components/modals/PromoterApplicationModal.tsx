@@ -134,7 +134,7 @@ export const PromoterApplicationModal: React.FC = () => {
                   type="text"
                   value={storeName}
                   onChange={(e) => setStoreName(e.target.value)}
-                  placeholder="e.g. Florence Palm Club"
+                  placeholder="e.g. Your Event Lounge or Organisation"
                   className="w-full bg-black/60 border border-white/15 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-[#FACC15]"
                   required
                 />

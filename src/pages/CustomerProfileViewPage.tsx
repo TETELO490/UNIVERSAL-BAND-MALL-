@@ -2,20 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { searchCustomerByIdOrPhone, VerifiedCustomerProfile } from '../utils/customerDirectory';
 import {
-  ShieldCheck,
+  isOrganizerOrVenueStaffRole,
+  isUserVerifiedAdminSession,
+  doesUserPersonallyOwnTicket,
+} from '../utils/legacyCleanup';
+import {
+  ShieldAlert,
   User,
   Radio,
   ArrowLeft,
-  CheckCircle2,
-  Calendar,
-  Ticket as TicketIcon,
-  Utensils,
-  CreditCard,
-  MapPin,
 } from 'lucide-react';
 
 export const CustomerProfileViewPage: React.FC = () => {
-  const { currentRoute, navigateTo, tickets } = useApp();
+  const { currentRoute, navigateTo, tickets, currentUser, firebaseUser } = useApp();
   const [customer, setCustomer] = useState<VerifiedCustomerProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -38,12 +37,32 @@ export const CustomerProfileViewPage: React.FC = () => {
     fetchProfile();
   }, [customerIdParam]);
 
-  const customerTickets = tickets.filter(
-    (t) =>
-      (customer?.phone && (t.attendeePhone === customer.phone || t.customerPhone === customer.phone)) ||
-      t.userId === customer?.id ||
-      t.attendeeName === customer?.fullName
+  const isUserLoggedIn = Boolean(
+    firebaseUser || (currentUser?.isRegistered && currentUser?.id && currentUser.id !== 'guest_user')
   );
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const isVerifiedAdmin = isUserVerifiedAdminSession(currentUser);
+  const isSelf = Boolean(
+    isUserLoggedIn &&
+    customer &&
+    (currentUser.id === customer.id ||
+      (currentUser.customerQrId && customer.customerQrId && currentUser.customerQrId === customer.customerQrId))
+  );
+  const canInspectCustomerProfile = Boolean(
+    isSelf ||
+    isVerifiedAdmin ||
+    (isUserLoggedIn &&
+      (isOrganizerOrVenueStaffRole(currentUser?.role) ||
+        roleLower === 'worker' ||
+        roleLower === 'staff' ||
+        roleLower === 'shop worker'))
+  );
+
+  // Keep variable available cleanly scoped to this verified user only
+  const customerTickets = canInspectCustomerProfile && customer
+    ? tickets.filter((t) => doesUserPersonallyOwnTicket(t, { id: customer.id, phone: customer.phone, customerQrId: customer.customerQrId }))
+    : [];
+  void customerTickets;
 
   return (
     <div className="pb-28 pt-4 px-4 max-w-md mx-auto">
@@ -79,6 +98,21 @@ export const CustomerProfileViewPage: React.FC = () => {
             className="px-4 py-2 bg-[#FACC15] text-black font-black text-xs rounded-xl"
           >
             Return to Discovery
+          </button>
+        </div>
+      ) : !canInspectCustomerProfile ? (
+        <div className="bg-[#141414] border border-red-500/30 rounded-3xl p-8 text-center space-y-3">
+          <ShieldAlert className="w-12 h-12 text-red-400 mx-auto" />
+          <h3 className="text-base font-bold text-white">Private Customer Profile</h3>
+          <p className="text-xs text-gray-400 leading-relaxed">
+            For customer privacy, personal passes, phone numbers, and ID records can only be viewed by the account owner or authorized event/venue staff.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigateTo('/')}
+            className="px-5 py-2.5 bg-[#FACC15] text-black font-black text-xs rounded-xl cursor-pointer"
+          >
+            Return Home
           </button>
         </div>
       ) : (
@@ -130,22 +164,23 @@ export const CustomerProfileViewPage: React.FC = () => {
             )}
           </div>
 
-          {/* Quick Action to write NFC or manage */}
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className={`grid gap-2.5 ${isVerifiedAdmin ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {isVerifiedAdmin && (
+              <button
+                type="button"
+                onClick={() => navigateTo('/admin/write-nfc')}
+                className="py-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Radio className="w-3.5 h-3.5 text-[#FACC15]" />
+                <span>NFC Writer</span>
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => navigateTo('/admin/write-nfc')}
-              className="py-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-            >
-              <Radio className="w-3.5 h-3.5 text-[#FACC15]" />
-              <span>NFC Writer</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/history')}
+              onClick={() => navigateTo(isSelf ? '/history' : '/')}
               className="py-3 rounded-xl bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
-              <span>Spending History</span>
+              <span>{isSelf ? 'Spending History' : 'Done'}</span>
             </button>
           </div>
         </div>

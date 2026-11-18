@@ -42,6 +42,7 @@ import { calculatePlatformFee, getPhoneLookupFeeSplit, MALL_FEES } from '../util
 import { isAlcoholItem } from '../utils/ageHelper';
 import { isAuthorizedAdminEmail, addAuthorizedAdminEmail } from '../utils/cryptoHelper';
 import { formatMovementTime, queueOfflineMovement } from '../utils/attendanceService';
+import { getTicketQuantity } from '../utils/eventTicketLimit';
 import {
   generateUniqueEventSlug,
   getPublicWebOrigin,
@@ -69,6 +70,7 @@ import {
   isTopUpPayshapReference,
   extractEventNameFromPayshapRef,
   checkIsTymeBankPaymentAlertSms,
+  getEventPayfastReference,
 } from '../utils/ticketStatus';
 import {
   INITIAL_EVENTS,
@@ -79,6 +81,18 @@ import {
   INITIAL_ALCOHOL,
   INITIAL_SOFTDRINKS,
 } from '../data/seedData';
+import {
+  isLegacyTestTicket,
+  doesUserPersonallyOwnTicket,
+  clearUserLocalCaches,
+  isOrganizerOrVenueStaffRole,
+  getUserOwnedEventIds,
+  getUserOwnedStoreIds,
+  isUserVerifiedAdminSession,
+  LEGACY_SEED_STORE_IDS,
+  LEGACY_SEED_EVENT_IDS,
+  LEGACY_SEED_PROMOTER_IDS,
+} from '../utils/legacyCleanup';
 import confetti from 'canvas-confetti';
 import { runAutoBinCheck } from '../utils/autoBinService';
 import { sweepConcludedTicketsToBill } from '../utils/billingService';
@@ -89,7 +103,7 @@ import {
   checkFirebaseEmailVerified,
   isUserVerified,
 } from '../utils/emailVerificationService';
-import { isAccountSecurityRequired } from '../utils/multiLockSecurity';
+import { isAccountSecurityRequired, hasUserConfiguredLock } from '../utils/multiLockSecurity';
 import {
   resolveCustomerQrId,
   parseCustomerQrScan,
@@ -237,6 +251,7 @@ interface AppContextType {
   cancelAdminLogin: () => Promise<void>;
   terminateAdminSession: () => Promise<void>;
   wipeAndReset: () => Promise<void>;
+  purgeTestDataForGoLive: () => Promise<{ deletedCount: number }>;
   
   buyTicket: (
     event: EventItem,
@@ -267,6 +282,18 @@ interface AppContextType {
       payshapReference: string;
     }
   ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
+  buyTicketWithPayFast: (
+    event: EventItem,
+    customerData: {
+      fullName: string;
+      phone: string;
+      quantity?: number;
+      ticketTier?: string;
+      tierPrice?: string;
+      payfastReference: string;
+    }
+  ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
+  adminApproveTicketPayment: (ticketId: string) => Promise<{ success: boolean; error?: string }>;
   updateTicketPaymentStatus: (
     ticketId: string,
     status: 'PAID' | 'VERIFIED',
@@ -527,7 +554,16 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isLocked, setIsLocked] = useState<boolean>(() => {
-    return localStorage.getItem('ub_locked') === 'true';
+    const rawLocked = localStorage.getItem('ub_locked') === 'true';
+    const pin = localStorage.getItem('ub_pin') || '';
+    const hasLock = Boolean(pin.trim().length >= 4) || hasUserConfiguredLock();
+    if (rawLocked && !hasLock) {
+      try {
+        localStorage.removeItem('ub_locked');
+      } catch {}
+      return false;
+    }
+    return rawLocked && hasLock;
   });
   const [currentPin, setCurrentPin] = useState<string>(() => {
     return localStorage.getItem('ub_pin') || '';
@@ -535,9 +571,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [attemptsLeft, setAttemptsLeft] = useState<number>(5);
   
   const [currentRoute, setCurrentRoute] = useState<string>(() => {
-    if (localStorage.getItem('ub_locked') === 'true') {
+    const rawLocked = localStorage.getItem('ub_locked') === 'true';
+    const pin = localStorage.getItem('ub_pin') || '';
+    const hasLock = Boolean(pin.trim().length >= 4) || hasUserConfiguredLock();
+    if (rawLocked && hasLock) {
       return '/app-lock';
     }
+    try {
+      localStorage.removeItem('ub_locked');
+    } catch {}
     // Respect window pathname if directly navigating in browser (e.g. /about, /terms, /admin)
     if (typeof window !== 'undefined' && window.location.pathname && window.location.pathname !== '/') {
       const p = window.location.pathname;
@@ -567,13 +609,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const openEventFoodPreorder = (event: EventItem) => {
     const role = (currentUser?.role || '').toLowerCase();
-    const isAdmin = role === 'admin' || localStorage.getItem('ub_admin_session') === 'true';
-    const userHasTicket = isAdmin || tickets.some(
-      (t) =>
-        t.eventId === event.id ||
-        (t.eventName && t.eventName.toLowerCase().trim() === (event.title || '').toLowerCase().trim()) ||
-        (t.eventTitle && t.eventTitle.toLowerCase().trim() === (event.title || '').toLowerCase().trim())
-    );
+    const isAdmin =
+      (role === 'admin' || isAuthorizedAdminEmail(currentUser?.email)) &&
+      localStorage.getItem('ub_admin_session') === 'true' &&
+      sessionStorage.getItem('ub_admin_5locks_passed') === 'true';
+    const userHasTicket =
+      isAdmin ||
+      tickets.some(
+        (t) =>
+          !isLegacyTestTicket(t) &&
+          doesUserPersonallyOwnTicket(t, currentUser) &&
+          (t.eventId === event.id ||
+            (t.eventName &&
+              t.eventName.toLowerCase().trim() === (event.title || '').toLowerCase().trim()) ||
+            (t.eventTitle &&
+              t.eventTitle.toLowerCase().trim() === (event.title || '').toLowerCase().trim()))
+      );
 
     if (!userHasTicket) {
       if (isEventExpired(event)) {
@@ -640,13 +691,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [menuFood, setMenuFood] = useState<MenuItem[]>([]);
   const [menuAlcohol, setMenuAlcohol] = useState<MenuItem[]>([]);
   const [menuSoftDrinks, setMenuSoftDrinks] = useState<MenuItem[]>([]);
-  // Transactions state loaded from localStorage
+  // Transactions state loaded strictly for the saved user profile
   const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>(() => {
     try {
+      const profileRaw = localStorage.getItem('ub_user_profile');
+      const profile = profileRaw ? JSON.parse(profileRaw) : null;
+      const activeUid = profile?.id && profile.id !== 'guest_user' ? profile.id : '';
+      if (!activeUid) return [];
       const raw = localStorage.getItem('ub_wallet_transactions');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((tx: WalletTransaction) => tx && tx.userId === activeUid);
+        }
       }
     } catch (e) {}
     return [];
@@ -1620,13 +1677,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubOrders = onSnapshot(collection(db, 'mall_orders'), (snapshot) => {
         const list: MallOrder[] = [];
         snapshot.forEach((d) => list.push({ id: d.id, ...(d.data() as any) }));
-        if (list.length > 0) {
-          list.sort((a, b) => new Date(b.paidAt || 0).getTime() - new Date(a.paidAt || 0).getTime());
-          setMallOrders(list);
-          try {
-            localStorage.setItem('ub_mall_orders', JSON.stringify(list));
-          } catch (e) {}
-        }
+        list.sort((a, b) => new Date(b.paidAt || 0).getTime() - new Date(a.paidAt || 0).getTime());
+        setMallOrders(list);
+        try {
+          localStorage.setItem('ub_mall_orders', JSON.stringify(list));
+        } catch (e) {}
       }, (err) => {
         console.warn('Notice: Firestore mall_orders offline/fallback listener:', err);
       });
@@ -1634,13 +1689,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubMessages = onSnapshot(collection(db, 'store_messages'), (snapshot) => {
         const list: StoreMessage[] = [];
         snapshot.forEach((d) => list.push({ id: d.id, ...(d.data() as any) }));
-        if (list.length > 0) {
-          list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-          setStoreMessages(list);
-          try {
-            localStorage.setItem('ub_store_messages', JSON.stringify(list));
-          } catch (e) {}
-        }
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setStoreMessages(list);
+        try {
+          localStorage.setItem('ub_store_messages', JSON.stringify(list));
+        } catch (e) {}
       }, (err) => {
         console.warn('Notice: Firestore store_messages offline/fallback listener:', err);
       });
@@ -1787,6 +1840,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [pendingAdminAuthUser, setPendingAdminAuthUser] = useState<UserProfile | null>(null);
+
+  // Enforce strict per-user cache isolation whenever authenticated user ID changes on this device
+  const prevIsolatedUserIdRef = useRef<string>(currentUser?.id || 'guest_user');
+  useEffect(() => {
+    const activeUid = currentUser?.id || 'guest_user';
+    const prevUid = prevIsolatedUserIdRef.current;
+    if (prevUid !== activeUid) {
+      prevIsolatedUserIdRef.current = activeUid;
+      // Clear user-scoped caches belonging to any prior identity on this device
+      if (prevUid !== 'guest_user' || activeUid === 'guest_user') {
+        clearUserLocalCaches();
+        setCarts({});
+      } else {
+        // Transitioning guest -> authenticated user: remove guest spending/wallet leftovers
+        try {
+          localStorage.removeItem('ub_spending_history');
+          localStorage.removeItem('ub_wallet_transactions');
+        } catch {}
+      }
+      setWalletTransactions((prev) =>
+        activeUid === 'guest_user' ? [] : prev.filter((tx) => tx.userId === activeUid)
+      );
+    }
+  }, [currentUser?.id]);
 
   // Clear admin session on app exit, close, kill, or restart (Strict Rule 2)
   useEffect(() => {
@@ -2158,7 +2235,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setCurrentRoute('/driver');
             setActiveModal('driver-dashboard');
           } else if (userRole === 'Shop Worker') {
-            const targetStoreId = gProfile.assignedStoreId || stores[0]?.id || '';
+            const targetStoreId = gProfile.assignedStoreId || '';
             setSelectedStoreId(targetStoreId);
             setActiveModal(null);
             setCurrentRoute(targetStoreId ? `/stores/${targetStoreId}` : '/');
@@ -2585,6 +2662,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const cleanupLegacyTestArtifacts = async (): Promise<number> => {
+    let deletedCount = 0;
+    try {
+      const evSnap = await getDocs(collection(db, 'events'));
+      const activeIds = new Set<string>();
+      for (const evDoc of evSnap.docs) {
+        const evData = { id: evDoc.id, ...(evDoc.data() as Omit<EventItem, 'id'>) };
+        if (LEGACY_SEED_EVENT_IDS.has(evDoc.id)) {
+          await deleteDoc(doc(db, 'events', evDoc.id)).catch(() => {});
+          deletedCount += 1;
+        } else if (!isEventExpired(evData.date || evData.event_date || '')) {
+          activeIds.add(evDoc.id);
+        }
+      }
+
+      const storesSnap = await getDocs(collection(db, 'stores'));
+      for (const sDoc of storesSnap.docs) {
+        if (LEGACY_SEED_STORE_IDS.has(sDoc.id)) {
+          await deleteDoc(doc(db, 'stores', sDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+
+      const promSnap = await getDocs(collection(db, 'promoters'));
+      for (const pDoc of promSnap.docs) {
+        if (LEGACY_SEED_PROMOTER_IDS.has(pDoc.id)) {
+          await deleteDoc(doc(db, 'promoters', pDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+
+      const itemsSnap = await getDocs(collection(db, 'items'));
+      for (const iDoc of itemsSnap.docs) {
+        const data = iDoc.data() as any;
+        if (LEGACY_SEED_STORE_IDS.has(String(data?.storeId || '').toLowerCase())) {
+          await deleteDoc(doc(db, 'items', iDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+
+      const tSnap = await getDocs(collection(db, 'tickets'));
+      for (const tDoc of tSnap.docs) {
+        const tData = { id: tDoc.id, ...(tDoc.data() as Omit<Ticket, 'id'>) };
+        if (isLegacyTestTicket(tData, activeIds)) {
+          await deleteDoc(doc(db, 'tickets', tDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+
+      const archTSnap = await getDocs(collection(db, 'archived_tickets'));
+      for (const atDoc of archTSnap.docs) {
+        const atData = { id: atDoc.id, ...(atDoc.data() as Omit<Ticket, 'id'>) };
+        if (isLegacyTestTicket(atData, activeIds)) {
+          await deleteDoc(doc(db, 'archived_tickets', atDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+    } catch (err) {
+      console.warn('Legacy test artifact cleanup notice:', err);
+    }
+    return deletedCount;
+  };
+
   // Seed & synchronize Firestore (Non-blocking parallel listener attachment)
   useEffect(() => {
     let unsubscribeStores: (() => void) | undefined;
@@ -2603,7 +2743,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!snapshot.empty) {
             const loadedStores: Store[] = [];
             snapshot.forEach((docSnap) => {
-              loadedStores.push({ id: docSnap.id, ...(docSnap.data() as Omit<Store, 'id'>) });
+              if (!LEGACY_SEED_STORE_IDS.has(docSnap.id)) {
+                loadedStores.push({ id: docSnap.id, ...(docSnap.data() as Omit<Store, 'id'>) });
+              }
             });
             setStores(loadedStores);
             try {
@@ -2611,6 +2753,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             } catch (e) {}
           } else {
             setStores([]);
+            try {
+              localStorage.setItem('ub_local_stores', '[]');
+            } catch (e) {}
           }
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'stores')
@@ -2624,7 +2769,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!snapshot.empty) {
             const loadedEvents: EventItem[] = [];
             snapshot.forEach((docSnap) => {
-              loadedEvents.push({ id: docSnap.id, ...(docSnap.data() as Omit<EventItem, 'id'>) });
+              if (!LEGACY_SEED_EVENT_IDS.has(docSnap.id)) {
+                loadedEvents.push({ id: docSnap.id, ...(docSnap.data() as Omit<EventItem, 'id'>) });
+              }
             });
             const activeEvents = loadedEvents.filter(
               (ev) => !isEventExpired(ev.date || ev.event_date || '')
@@ -2654,7 +2801,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         (snapshot) => {
           const loadedTickets: Ticket[] = [];
           snapshot.forEach((docSnap) => {
-            loadedTickets.push({ id: docSnap.id, ...(docSnap.data() as Omit<Ticket, 'id'>) });
+            const tObj = { id: docSnap.id, ...(docSnap.data() as Omit<Ticket, 'id'>) };
+            if (!isLegacyTestTicket(tObj)) {
+              loadedTickets.push(tObj);
+            }
           });
 
           const nextMap = new Map<string, Ticket>();
@@ -2749,6 +2899,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Deferred background tasks (1s after initial mount to keep first render instantaneous)
       const timer = setTimeout(() => {
         testConnection().catch(() => {});
+        cleanupLegacyTestArtifacts().catch((err) => console.warn('Legacy cleanup:', err));
         runAutoBinCheck().catch((err) => console.warn('Startup auto-bin sweep:', err));
         archiveExpiredEvents().catch((err) => console.warn('Startup auto-archive sweep:', err));
       }, 1000);
@@ -2784,6 +2935,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const lockApp = () => {
+    const hasLock =
+      Boolean(currentPin && currentPin.trim().length >= 4) ||
+      hasUserConfiguredLock(currentUser?.email, currentUser);
+    if (!hasLock) {
+      setWelcomeMessage('No lock configured yet. You can create a 6-digit PIN, Password, or Pattern in Lock Settings.');
+      setActiveModal('app-lock-settings');
+      return;
+    }
     setIsLocked(true);
     localStorage.setItem('ub_locked', 'true');
     setCurrentRoute('/app-lock');
@@ -2837,8 +2996,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const qty = Math.max(1, customerData?.quantity || 1);
-    const localSoldCount = tickets.filter((t) => t.eventId === liveEvent.id).length;
-    const preSoldCount = Math.max(Number(liveEvent.ticketsSold || 0), localSoldCount);
+    const localSoldCount = tickets
+      .filter((t) => t.eventId === liveEvent.id && isTicketPaid(t))
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+    const preSoldCount = localSoldCount;
     const preLimit =
       liveEvent.ticketsAvailable !== undefined && liveEvent.ticketsAvailable !== null
         ? Number(liveEvent.ticketsAvailable)
@@ -2883,7 +3044,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           throw new Error('LIMIT_CLOSED:Ticket sales for this event are closed.');
         }
 
-        const serverSold = Math.max(Number(remoteEvent.ticketsSold || 0), localSoldCount);
+        const serverSold = localSoldCount;
         const limitVal =
           remoteEvent.ticketsAvailable !== undefined && remoteEvent.ticketsAvailable !== null
             ? Number(remoteEvent.ticketsAvailable)
@@ -2921,12 +3082,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const custName = customerData?.fullName?.trim() || currentUser.fullName || currentUser.name || 'Universal Band Guest';
     const custPhone = customerData?.phone?.trim() || currentUser.phone || '0820000000';
-    const custPhoto = customerData?.photo?.trim() || currentUser.photo || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80';
+    const custPhoto = customerData?.photo?.trim() || currentUser.photo || '';
 
-    const hostStore =
-      stores.find((s) => s.id === liveEvent.storeId) ||
-      stores.find((s) => s.id === selectedStoreId) ||
-      stores[0];
+    const hostStore = liveEvent.storeId
+      ? stores.find((s) => s.id === liveEvent.storeId)
+      : undefined;
 
     const resolvedEventLocation =
       liveEvent.location?.trim() ||
@@ -2956,6 +3116,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         event_date: liveEvent.event_date || liveEvent.date,
         eventLocation: resolvedEventLocation,
         price: unitPriceStr.startsWith('R') ? unitPriceStr : `R${unitPriceStr}`,
+        quantity: 1,
         ticketTier: resolvedTier,
         tierName: resolvedTier,
         attendeeName: custName,
@@ -2966,6 +3127,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         qrCode: custQrId || uniqueTicketCode,
         bandCode: uniqueTicketCode,
         status: 'valid',
+        paymentStatus: 'PAID',
+        paidAt: nowIso,
         attendanceStatus: 'OUTSIDE',
         attendanceLogs: [],
         purchaseDate: nowIso,
@@ -3081,13 +3244,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const qty = Math.max(1, customerData.quantity || 1);
+    const localPaidSoldCount = tickets
+      .filter((t) => t.eventId === liveEvent.id && isTicketPaid(t))
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+    const payshapLimit =
+      liveEvent.ticketsAvailable !== undefined && liveEvent.ticketsAvailable !== null
+        ? Number(liveEvent.ticketsAvailable)
+        : null;
+    if (payshapLimit !== null && Number.isFinite(payshapLimit)) {
+      const remaining = Math.max(0, payshapLimit - localPaidSoldCount);
+      if (remaining <= 0) {
+        return {
+          success: false,
+          error: `Sold Out! All ${payshapLimit} tickets for "${liveEvent.title}" have been sold.`,
+        };
+      }
+      if (qty > remaining) {
+        return {
+          success: false,
+          error: `Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for "${liveEvent.title}". Please lower your quantity.`,
+        };
+      }
+    }
+
     const unitPriceNum = parsePriceNumber(customerData.tierPrice || liveEvent.price);
     const totalPriceNum = Math.round(unitPriceNum * qty * 100) / 100;
     const formattedTotalPrice = `R${totalPriceNum % 1 === 0 ? totalPriceNum.toFixed(0) : totalPriceNum.toFixed(2)}`;
     const custName = customerData.fullName.trim() || 'Attendee';
     const custPhone = customerData.phone.trim() || '0820000000';
     const resolvedTier = customerData.ticketTier || 'General';
-    const hostStore = stores.find((s) => s.id === liveEvent.storeId) || stores[0];
+    const hostStore = liveEvent.storeId ? stores.find((s) => s.id === liveEvent.storeId) : undefined;
     const nowIso = new Date().toISOString();
 
     const custQrId = resolveCustomerQrId(currentUser.id, currentUser.customerQrId);
@@ -3097,8 +3283,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: uniqueTicketCode,
       ticketId: uniqueTicketCode,
       eventId: liveEvent.id,
-      storeId: hostStore ? hostStore.id : '',
-      storeName: hostStore ? hostStore.name : 'Event Venue',
+      storeId: hostStore ? hostStore.id : (liveEvent.storeId || ''),
+      storeName: hostStore ? hostStore.name : (liveEvent.storeName || 'Event Venue'),
       userId: currentUser.id || 'guest_user',
       user_id: currentUser.id || 'guest_user',
       customerQrId: custQrId || undefined,
@@ -3106,7 +3292,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       eventTitle: liveEvent.title,
       eventDate: liveEvent.date,
       event_date: liveEvent.event_date || liveEvent.date,
-      eventLocation: liveEvent.location || 'Pretoria',
+      eventLocation: liveEvent.location || hostStore?.location || 'South Africa',
       price: formattedTotalPrice,
       quantity: qty,
       ticketTier: resolvedTier,
@@ -3125,6 +3311,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: nowIso,
       paymentStatus: 'WAITING FOR PAYMENT',
       payshapReference: customerData.payshapReference,
+      payshapRequestSent: false,
+    };
+
+    try {
+      await setDoc(doc(db, 'tickets', newTicket.id), cleanForFirestore(newTicket));
+    } catch (e) {
+      console.warn('Could not write ticket to Firestore:', e);
+    }
+
+    setTickets((prev) => [newTicket, ...prev]);
+    notifyTicketLifecycleEvent(newTicket, 'waiting');
+
+    return {
+      success: true,
+      ticket: newTicket,
+    };
+  };
+
+  const buyTicketWithPayFast = async (
+    event: EventItem,
+    customerData: {
+      fullName: string;
+      phone: string;
+      quantity?: number;
+      ticketTier?: string;
+      tierPrice?: string;
+      payfastReference: string;
+    }
+  ): Promise<{ success: boolean; ticket?: Ticket; error?: string }> => {
+    const liveEvent = events.find((e) => e.id === event.id) || event;
+    if (isEventExpired(liveEvent)) {
+      return { success: false, error: 'This event has already passed.' };
+    }
+    if (liveEvent.status === 'Closed') {
+      return { success: false, error: 'Ticket sales for this event are closed.' };
+    }
+
+    const qty = Math.max(1, customerData.quantity || 1);
+    const localPaidSoldCount = tickets
+      .filter((t) => t.eventId === liveEvent.id && isTicketPaid(t))
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+    const eventLimit =
+      liveEvent.ticketsAvailable !== undefined && liveEvent.ticketsAvailable !== null
+        ? Number(liveEvent.ticketsAvailable)
+        : null;
+    if (eventLimit !== null && Number.isFinite(eventLimit)) {
+      const remaining = Math.max(0, eventLimit - localPaidSoldCount);
+      if (remaining <= 0) {
+        return {
+          success: false,
+          error: `Sold Out! All ${eventLimit} tickets for "${liveEvent.title}" have been sold.`,
+        };
+      }
+      if (qty > remaining) {
+        return {
+          success: false,
+          error: `Only ${remaining} ticket${remaining === 1 ? '' : 's'} remaining for "${liveEvent.title}". Please lower your quantity.`,
+        };
+      }
+    }
+
+    const unitPriceNum = parsePriceNumber(customerData.tierPrice || liveEvent.price);
+    const totalPriceNum = Math.round(unitPriceNum * qty * 100) / 100;
+    const formattedTotalPrice = `R${totalPriceNum % 1 === 0 ? totalPriceNum.toFixed(0) : totalPriceNum.toFixed(2)}`;
+    const custName = customerData.fullName.trim() || 'Attendee';
+    const custPhone = customerData.phone.trim() || '0820000000';
+    const resolvedTier = customerData.ticketTier || 'General';
+    const hostStore = liveEvent.storeId ? stores.find((s) => s.id === liveEvent.storeId) : undefined;
+    const nowIso = new Date().toISOString();
+
+    const custQrId = resolveCustomerQrId(currentUser.id, currentUser.customerQrId);
+    const randomFiveDigits = Math.floor(10000 + Math.random() * 90000);
+    const uniqueTicketCode = `UB-${randomFiveDigits}`;
+    const newTicket: Ticket = {
+      id: uniqueTicketCode,
+      ticketId: uniqueTicketCode,
+      eventId: liveEvent.id,
+      storeId: hostStore ? hostStore.id : (liveEvent.storeId || ''),
+      storeName: hostStore ? hostStore.name : (liveEvent.storeName || 'Event Venue'),
+      userId: currentUser.id || 'guest_user',
+      user_id: currentUser.id || 'guest_user',
+      customerQrId: custQrId || undefined,
+      eventName: liveEvent.title,
+      eventTitle: liveEvent.title,
+      eventDate: liveEvent.date,
+      event_date: liveEvent.event_date || liveEvent.date,
+      eventLocation: liveEvent.location || hostStore?.location || 'South Africa',
+      price: formattedTotalPrice,
+      quantity: qty,
+      ticketTier: resolvedTier,
+      tierName: resolvedTier,
+      attendeeName: custName,
+      attendeePhone: custPhone,
+      customerName: custName,
+      customerPhone: custPhone,
+      qrCode: custQrId || uniqueTicketCode,
+      bandCode: uniqueTicketCode,
+      status: 'valid',
+      attendanceStatus: 'OUTSIDE',
+      attendanceLogs: [],
+      purchaseDate: nowIso,
+      purchase_date: nowIso,
+      createdAt: nowIso,
+      paymentStatus: 'WAITING FOR PAYMENT',
+      paymentMethod: 'PayFast',
+      payfastReference: customerData.payfastReference,
+      payshapReference: customerData.payfastReference,
       payshapRequestSent: false,
     };
 
@@ -3180,18 +3473,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     let updatedTicket: Ticket | null = null;
-    setTickets((prev) =>
-      prev.map((t) => {
-        if (t.id === ticketId || t.ticketId === ticketId) {
-          updatedTicket = { ...t, ...updates };
-          return updatedTicket;
-        }
-        return t;
-      })
-    );
+    const nextTickets = tickets.map((t) => {
+      if (t.id === ticketId || t.ticketId === ticketId) {
+        updatedTicket = { ...t, ...updates };
+        return updatedTicket;
+      }
+      return t;
+    });
+    setTickets(nextTickets);
 
     if (updatedTicket && isTicketPaid(updatedTicket)) {
       notifyTicketLifecycleEvent(updatedTicket, 'paid');
+
+      // Payment just got approved -> sync event's ticketsSold strictly from approved PAID tickets
+      const targetEventId = (updatedTicket as Ticket).eventId;
+      if (targetEventId) {
+        const newPaidSoldCount = nextTickets
+          .filter((t) => t.eventId === targetEventId && isTicketPaid(t))
+          .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+
+        setEvents((prev) => {
+          const nextEvents = prev.map((ev) =>
+            ev.id === targetEventId ? { ...ev, ticketsSold: newPaidSoldCount } : ev
+          );
+          try {
+            localStorage.setItem('ub_local_events', JSON.stringify(nextEvents));
+          } catch {}
+          return nextEvents;
+        });
+
+        updateDoc(doc(db, 'events', targetEventId), {
+          ticketsSold: newPaidSoldCount,
+        }).catch((e) => console.warn('Could not sync ticketsSold on event:', e));
+      }
     }
 
     try {
@@ -3538,9 +3852,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return updatedOrder;
   };
 
+  const ticketsRef = useRef<Ticket[]>(tickets);
+  useEffect(() => {
+    ticketsRef.current = tickets;
+  }, [tickets]);
+
   const confirmTicketPaymentManually = async (ticketId: string): Promise<boolean> => {
-    const targetTicket = tickets.find((t) => t.id === ticketId || t.ticketId === ticketId);
-    const refText = targetTicket?.payshapReference || targetTicket?.bandCode || ticketId;
+    const targetTicket = ticketsRef.current.find((t) => t.id === ticketId || t.ticketId === ticketId);
+    const refText =
+      targetTicket?.payfastReference ||
+      targetTicket?.payshapReference ||
+      targetTicket?.bandCode ||
+      ticketId;
     const smsText = lastPaymentSmsText || 'MANUAL ADMIN CONFIRMATION AFTER SMS CHECK';
     const ok = await updateTicketPaymentStatus(ticketId, 'PAID', refText, smsText);
     if (ok) {
@@ -3552,6 +3875,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
     return ok;
+  };
+
+  const adminApproveTicketPayment = async (
+    ticketId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const targetTicket = ticketsRef.current.find((t) => t.id === ticketId || t.ticketId === ticketId);
+    if (!targetTicket) {
+      return { success: false, error: 'Ticket not found' };
+    }
+
+    const nowIso = new Date().toISOString();
+    const approvedByName = currentUser.fullName || currentUser.email || 'Admin Backup';
+    const refText =
+      targetTicket.payfastReference ||
+      targetTicket.payshapReference ||
+      targetTicket.bandCode ||
+      ticketId;
+
+    const updates: Partial<Ticket> = {
+      paymentStatus: 'PAID',
+      status: 'valid',
+      paidAt: nowIso,
+      approvedBy: approvedByName,
+      approvedAt: nowIso,
+      verifiedSmsText: `MANUAL ADMIN BACKUP APPROVAL by ${approvedByName}`,
+    };
+
+    let updatedTicket: Ticket | null = null;
+    const nextTickets = ticketsRef.current.map((t) => {
+      if (t.id === ticketId || t.ticketId === ticketId) {
+        updatedTicket = { ...t, ...updates };
+        return updatedTicket;
+      }
+      return t;
+    });
+    setTickets(nextTickets);
+
+    try {
+      await updateDoc(doc(db, 'tickets', ticketId), cleanForFirestore(updates));
+    } catch (e) {
+      console.warn('Failed to update ticket payment status in Firestore:', e);
+    }
+
+    if (updatedTicket) {
+      notifyTicketLifecycleEvent(updatedTicket, 'paid');
+
+      const targetEventId = (updatedTicket as Ticket).eventId;
+      if (targetEventId) {
+        const newPaidSoldCount = nextTickets
+          .filter((t) => t.eventId === targetEventId && isTicketPaid(t))
+          .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+
+        setEvents((prev) => {
+          const nextEvents = prev.map((ev) =>
+            ev.id === targetEventId ? { ...ev, ticketsSold: newPaidSoldCount } : ev
+          );
+          try {
+            localStorage.setItem('ub_local_events', JSON.stringify(nextEvents));
+          } catch {}
+          return nextEvents;
+        });
+
+        updateDoc(doc(db, 'events', targetEventId), {
+          ticketsSold: newPaidSoldCount,
+        }).catch(() => {});
+      }
+    }
+
+    if (activePaymentAlarm) {
+      void dismissPaymentAlarm();
+    }
+
+    playTicketPaidSuccessSound();
+    setNotificationBanner({
+      id: `manual_approve_${ticketId}_${Date.now()}`,
+      role: 'admin',
+      title: 'Ticket Approved (Admin Backup) ✅',
+      message: `Ticket #${targetTicket.bandCode || targetTicket.id} for ${targetTicket.attendeeName || targetTicket.customerName} marked as PAID!`,
+      variant: 'paid',
+    });
+
+    return { success: true };
   };
 
   const confirmMallOrderPaymentManually = async (orderId: string): Promise<boolean> => {
@@ -3566,10 +3971,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   /**
-   * MANUAL APPROVAL ONLY:
-   * Real GoTyme / TymeBank incoming SMS NEVER auto-approves tickets or wallet balances.
-   * Instead, for ANY amount (R1, R5, R50, R100, R1000, etc.) it triggers a LOUD LOOPING ALARM
-   * and notification ("PAYMENT RECEIVED - Check SMS") until the Admin stops it & approves manually.
+   * AUTOMATED MESSAGE DETECTION & MANUAL BACKUP APPROVAL:
+   * 1. The app looks for the payment confirmation message (PayFast or TymeBank/PayShap) on its own.
+   *    If a matching waiting ticket is found, it automatically marks it PAID ✅.
+   * 2. If no ticket matches automatically, or as backup, the admin can approve the ticket manually.
    */
   const processTymebankSms = (
     smsText: string,
@@ -3579,7 +3984,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!parsed.isPayment) {
       return {
         success: false,
-        message: 'Ignored SMS: must be from GoTyme Bank / TymeBank and contain "You received" and "from".',
+        message: 'Ignored SMS: not a recognized payment alert (TymeBank or PayFast).',
       };
     }
 
@@ -3588,8 +3993,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       smsText: parsed.rawText,
       sender: parsed.senderName || sender,
       amount: parsed.amount,
+      confirmedReference: parsed.reference,
     });
 
+    // Requirement: The app looks for the message on its own and auto-approves matching waiting tickets!
+    const matchedTicket = findMatchingWaitingTicket(ticketsRef.current, {
+      paidAmount: parsed.numericAmount,
+      senderName: parsed.senderName,
+      reference: parsed.reference || '',
+    });
+
+    if (matchedTicket) {
+      const refToSave =
+        parsed.reference ||
+        matchedTicket.payfastReference ||
+        matchedTicket.payshapReference ||
+        matchedTicket.bandCode;
+
+      void updateTicketPaymentStatus(
+        matchedTicket.id,
+        'PAID',
+        refToSave,
+        parsed.rawText
+      );
+
+      playTicketPaidSuccessSound();
+      void triggerBackgroundNotification(
+        'Payment Approved Automatically ✅',
+        `${parsed.amount} received via ${parsed.gateway || 'PayFast'} for ${matchedTicket.attendeeName || matchedTicket.customerName} (${matchedTicket.eventTitle}). Ticket is now ACTIVE!`,
+        `auto-paid-${matchedTicket.id}`
+      );
+
+      setNotificationBanner({
+        id: `auto_paid_${matchedTicket.id}_${nowMs}`,
+        role: 'admin',
+        title: 'Payment Auto-Approved ✅',
+        message: `${parsed.amount} received via ${parsed.gateway || 'PayFast'} — Ticket #${matchedTicket.bandCode || matchedTicket.id} is marked PAID!`,
+        variant: 'paid',
+      });
+
+      const logMsg = `AUTO-APPROVED (${parsed.gateway || 'Payment'}) — ${parsed.amount} from ${parsed.senderName} for ticket #${matchedTicket.bandCode || matchedTicket.id} (${matchedTicket.attendeeName || matchedTicket.customerName})`;
+      const logItem = {
+        id: `sms_${nowMs}`,
+        text: parsed.rawText,
+        time: new Date(nowMs).toLocaleTimeString(),
+        status: logMsg,
+      };
+      setTymebankSmsLogs((prev) => {
+        const updated = [logItem, ...prev.slice(0, 49)];
+        try {
+          localStorage.setItem('tymebank_sms_logs', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      return {
+        success: true,
+        message: logMsg,
+        ticket: matchedTicket,
+        data: {
+          paidAmount: parsed.numericAmount,
+          amountLabel: parsed.amount,
+          customerName: parsed.senderName,
+          ticketId: matchedTicket.id,
+        },
+      };
+    }
+
+    // No matching ticket found immediately -> trigger payment alarm so Admin can review and approve manually as backup
     const alarmData: ActivePaymentAlarm = {
       id: `alarm_${nowMs}`,
       amount: parsed.amount,
@@ -3607,7 +4078,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'payment-received-alarm'
     );
 
-    const logMsg = `ALARM RINGING — ${parsed.amount} from ${parsed.senderName} — Manual approval required`;
+    const logMsg = `ALARM RINGING — ${parsed.amount} from ${parsed.senderName} — Manual backup approval available`;
     const logItem = {
       id: `sms_${nowMs}`,
       text: parsed.rawText,
@@ -4019,8 +4490,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       matches.find((t) => {
         const att = t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
         const isExp = t.status?.toLowerCase() === 'expired' || (t.status as string)?.toLowerCase() === 'binned' || (t as any).isBinned;
-        return att !== 'INSIDE' && !isExp;
-      }) || matches[0];
+        return isTicketPaid(t) && att !== 'INSIDE' && att !== 'EXITED' && !t.checkedAt && !(t.attendanceLogs && t.attendanceLogs.length > 0) && !isExp;
+      }) ||
+      matches.find((t) => isTicketPaid(t)) ||
+      matches[0];
 
     if (!existing) {
       return {
@@ -4030,14 +4503,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Role check: If current user is Promoter, enforce storeId scope!
-    if (currentUser.role === 'Promoter') {
-      const allowedStoreId = currentUser.assignedStoreId;
-      if (allowedStoreId && existing.storeId !== allowedStoreId) {
+    if (!isTicketPaid(existing)) {
+      return {
+        success: false,
+        code: 'PAYMENT_PENDING',
+        message: `PAYMENT NOT APPROVED: Ticket ${existing.ticketId || existing.id} is waiting for payment approval and is not valid for entry yet.`,
+        ticket: existing,
+      };
+    }
+
+    // Role check: Enforce strict event/venue ownership for Event Organisers, Promoters, Managers, and Workers
+    if (!isUserVerifiedAdminSession(currentUser)) {
+      const roleLower = (currentUser?.role || '').toLowerCase();
+      const isWorkerRole = roleLower === 'worker' || roleLower === 'staff' || roleLower === 'shop worker';
+      if (isOrganizerOrVenueStaffRole(currentUser?.role) || isWorkerRole) {
+        const ownedEventIds = getUserOwnedEventIds(currentUser, events, stores);
+        const ownedStoreIds = getUserOwnedStoreIds(currentUser, stores);
+        const canScanTicket = Boolean(
+          (existing.eventId && ownedEventIds.has(existing.eventId)) ||
+          (existing.storeId && ownedStoreIds.has(existing.storeId)) ||
+          (currentUser?.assignedStoreId && existing.storeId === currentUser.assignedStoreId)
+        );
+        if (!canScanTicket) {
+          return {
+            success: false,
+            code: 'UNAUTHORIZED_VENUE',
+            message: `UNAUTHORIZED VENUE: This ticket is for "${existing.eventName || existing.storeName}". You can only scan and check-in tickets for your own event or assigned venue.`,
+          };
+        }
+      } else {
         return {
           success: false,
           code: 'UNAUTHORIZED_VENUE',
-          message: `UNAUTHORIZED VENUE: This ticket is for "${existing.storeName}". Promoters can only track and check-in tickets for their own venue ("${currentUser.assignedStoreName || allowedStoreId}").`,
+          message: 'Only authorized event organizers, venue staff, or admin can scan gate tickets.',
         };
       }
     }
@@ -4070,12 +4568,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowIso = new Date().toISOString();
     const bouncerName = currentUser.fullName || currentUser.name || 'Gate Bouncer';
 
-    // Prevent duplicate INSIDE: if ticket is already INSIDE, show "ALREADY INSIDE - Since HH:mm" with option to CHECK OUT!
-    if (currentAttendance === 'INSIDE') {
+    // Single-use QR Code Check: Once a ticket is scanned/used once, it is permanently invalid for subsequent scans!
+    if (
+      existing.status === 'used' ||
+      existing.status === 'inside' ||
+      existing.attendanceStatus === 'INSIDE' ||
+      existing.attendanceStatus === 'EXITED' ||
+      existing.checkedAt ||
+      (existing.attendanceLogs && existing.attendanceLogs.length > 0)
+    ) {
       return {
         success: false,
-        code: 'ALREADY_INSIDE',
-        message: `ALREADY INSIDE - Since ${existing.insideSince || existing.lastMovementAt || 'earlier'}`,
+        code: 'ALREADY_USED',
+        message: `INVALID TICKET: This QR code has ALREADY been scanned and used (${existing.checkedAt ? new Date(existing.checkedAt).toLocaleTimeString() : 'earlier'}). Single-use tickets cannot be reused.`,
         ticket: existing,
       };
     }
@@ -4166,14 +4671,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Role check: If current user is Promoter, enforce storeId scope
-    if (currentUser.role === 'Promoter') {
-      const allowedStoreId = currentUser.assignedStoreId;
-      if (allowedStoreId && existing.storeId !== allowedStoreId) {
+    // Role check: Enforce strict event/venue ownership for Event Organisers, Promoters, Managers, and Workers
+    if (!isUserVerifiedAdminSession(currentUser)) {
+      const roleLower = (currentUser?.role || '').toLowerCase();
+      const isWorkerRole = roleLower === 'worker' || roleLower === 'staff' || roleLower === 'shop worker';
+      if (isOrganizerOrVenueStaffRole(currentUser?.role) || isWorkerRole) {
+        const ownedEventIds = getUserOwnedEventIds(currentUser, events, stores);
+        const ownedStoreIds = getUserOwnedStoreIds(currentUser, stores);
+        const canScanTicket = Boolean(
+          (existing.eventId && ownedEventIds.has(existing.eventId)) ||
+          (existing.storeId && ownedStoreIds.has(existing.storeId)) ||
+          (currentUser?.assignedStoreId && existing.storeId === currentUser.assignedStoreId)
+        );
+        if (!canScanTicket) {
+          return {
+            success: false,
+            code: 'UNAUTHORIZED_VENUE',
+            message: `UNAUTHORIZED VENUE: This ticket is for "${existing.eventName || existing.storeName}". You can only track tickets for your own event or venue.`,
+          };
+        }
+      } else {
         return {
           success: false,
           code: 'UNAUTHORIZED_VENUE',
-          message: `UNAUTHORIZED VENUE: This ticket is for "${existing.storeName}". Promoters can only track tickets for their own venue.`,
+          message: 'Only authorized event organizers, venue staff, or admin can check out attendees.',
         };
       }
     }
@@ -4331,6 +4852,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentRoute('/');
   };
 
+  const purgeTestDataForGoLive = async (): Promise<{ deletedCount: number }> => {
+    let deletedCount = await cleanupLegacyTestArtifacts();
+    try {
+      const evSnap = await getDocs(collection(db, 'events'));
+      const activeEventIds = new Set<string>();
+      for (const evDoc of evSnap.docs) {
+        const evData = { id: evDoc.id, ...(evDoc.data() as Omit<EventItem, 'id'>) };
+        if (isEventExpired(evData.date || evData.event_date || '')) {
+          await deleteDoc(doc(db, 'events', evDoc.id)).catch(() => {});
+          deletedCount += 1;
+        } else {
+          activeEventIds.add(evDoc.id);
+        }
+      }
+
+      // Purge any legacy or expired tickets still remaining before going live
+      const tSnap = await getDocs(collection(db, 'tickets'));
+      for (const tDoc of tSnap.docs) {
+        const tData = { id: tDoc.id, ...(tDoc.data() as Omit<Ticket, 'id'>) };
+        const isExpiredOrOrphaned =
+          tData.status === 'expired' ||
+          isEventExpired(tData) ||
+          (tData.eventId && !activeEventIds.has(tData.eventId));
+        if (isLegacyTestTicket(tData, activeEventIds) || isExpiredOrOrphaned) {
+          await deleteDoc(doc(db, 'tickets', tDoc.id)).catch(() => {});
+          deletedCount += 1;
+        }
+      }
+
+      const archEvSnap = await getDocs(collection(db, 'archived_events'));
+      for (const d of archEvSnap.docs) {
+        await deleteDoc(doc(db, 'archived_events', d.id)).catch(() => {});
+        deletedCount += 1;
+      }
+      const archTSnap = await getDocs(collection(db, 'archived_tickets'));
+      for (const d of archTSnap.docs) {
+        await deleteDoc(doc(db, 'archived_tickets', d.id)).catch(() => {});
+        deletedCount += 1;
+      }
+
+      try {
+        localStorage.removeItem('ub_user_tickets');
+        localStorage.removeItem('tymebank_sms_logs');
+      } catch {}
+    } catch (err) {
+      console.warn('Go-live purge warning:', err);
+    }
+    return { deletedCount };
+  };
+
   // Auto-sweep concluded tickets whose event day passed midnight into the Bill
   useEffect(() => {
     if (tickets.length > 0 && currentUser.id && currentUser.id !== 'guest_user') {
@@ -4420,6 +4991,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ticketsAvailable: Number.isFinite(parsedLimit) ? parsedLimit : 200,
       ticketsSold: eventData.ticketsSold ?? 0,
       creatorId: currentUser.id,
+      organizerId: currentUser.id,
+      creatorName: currentUser.fullName || currentUser.name,
     };
 
     const cleanPayload = cleanForFirestore(fullEvent);
@@ -4497,8 +5070,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // Prevent setting ticket limit lower than tickets already sold
-    const soldFromTickets = tickets.filter((t) => t.eventId === eventId).length;
-    const currentSold = Math.max(Number(existingEvent?.ticketsSold || 0), soldFromTickets);
+    const soldFromTickets = tickets
+      .filter((t) => t.eventId === eventId && isTicketPaid(t))
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+    const currentSold = soldFromTickets;
     if (
       updatedData.ticketsAvailable !== undefined &&
       updatedData.ticketsAvailable !== null
@@ -4683,13 +5258,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addWalletTransaction = (tx: Omit<WalletTransaction, 'id' | 'date'>) => {
+    const uid = currentUser?.id && currentUser.id !== 'guest_user' ? currentUser.id : '';
     const newTx: WalletTransaction = {
       id: 'tx-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      userId: uid || undefined,
       date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       ...tx,
     };
     setWalletTransactions((prev) => {
-      const updated = [newTx, ...prev];
+      const scopedPrev = uid ? prev.filter((item) => item.userId === uid) : [];
+      const updated = [newTx, ...scopedPrev];
       try {
         localStorage.setItem('ub_wallet_transactions', JSON.stringify(updated));
       } catch (e) {}
@@ -6010,7 +6588,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setCurrentRoute('/driver');
           setActiveModal('driver-dashboard');
         } else if (userRole === 'Shop Worker') {
-          const workerStoreId = resolvedAssignedStoreId || stores[0]?.id || '';
+          const workerStoreId = resolvedAssignedStoreId || '';
           setSelectedStoreId(workerStoreId);
           setActiveModal(null);
           setCurrentRoute(workerStoreId ? `/stores/${workerStoreId}` : '/');
@@ -6113,9 +6691,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       // c) Do NOT delete admin account from Firebase / Database - only remove from this device / app
+      clearUserLocalCaches();
       setWelcomeMessage(null);
       setFirebaseUser(null);
       setTickets([]);
+      setWalletTransactions([]);
       setCurrentUser({
         id: 'guest_user',
         name: 'New User',
@@ -6135,13 +6715,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // PART 3: OTHER ROLES - DO NOT DELETE ACCOUNT
-    // For ALL other roles (NOT admin) - e.g. normal user, artist, vendor, staff, etc:
-    // When they Log Out / Lock Out / Leave the app / Close the app:
-    // - Do NOT delete their account from the app
-    // - Do NOT sign them out completely
-    // - KEEP their account saved on the device like normal - next time they open the app, they can just unlock with their Fingerprint or PIN, or stay logged in
-    // - Only clear session if they manually tap "Delete My Account" - not on normal logout.
+    // Clean sign-out for all roles: clear local caches, reset session, and navigate cleanly to /login
+    try {
+      await signOut(auth);
+    } catch (e) {}
+
     const userEmail = (currentUser?.email || '').toLowerCase().trim();
     if (userEmail && currentUser.walletBalance !== undefined) {
       try {
@@ -6149,9 +6727,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch (e) {}
     }
 
-    setIsLocked(true);
+    clearUserLocalCaches();
+    setWelcomeMessage(null);
+    setFirebaseUser(null);
+    setTickets([]);
+    setWalletTransactions([]);
+    setCurrentUser({
+      id: 'guest_user',
+      name: 'New User',
+      fullName: 'New User',
+      email: '',
+      phone: '',
+      role: 'Customer',
+      walletBalance: 0,
+      isRegistered: false,
+    });
+    setIsAdminSecurityModalOpen(false);
     setActiveModal(null);
-    setCurrentRoute('/app-lock');
+    setIsLocked(false);
+    try {
+      localStorage.removeItem('ub_locked');
+    } catch {}
+    setCurrentRoute('/login');
   };
 
   const deleteMyAccount = async (): Promise<{ success: boolean; error?: string }> => {
@@ -6210,12 +6807,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e) {}
 
-      // 5. Clear welcome message completely so "Welcome back" does NOT show
+      // 5. Clear welcome message & user-scoped caches completely
+      clearUserLocalCaches();
       setWelcomeMessage(null);
 
       // 6. Reset state to guest
       setFirebaseUser(null);
       setTickets([]);
+      setWalletTransactions([]);
       setCurrentUser({
         id: 'guest_user',
         name: 'New User',
@@ -6277,9 +6876,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (cleanEmail) {
           localStorage.removeItem(`ub_wallet_balance_${cleanEmail}`);
         }
+        clearUserLocalCaches();
         setWelcomeMessage(null);
         setFirebaseUser(null);
         setTickets([]);
+        setWalletTransactions([]);
         setCurrentUser({
           id: 'guest_user',
           name: 'New User',
@@ -6366,6 +6967,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const fullItem: MenuItem = {
       id: newId,
       ...itemData,
+      creatorId: currentUser.id,
       createdAt: new Date().toISOString(),
     };
 
@@ -6378,7 +6980,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      await setDoc(doc(db, collectionName, newId), fullItem);
+      await setDoc(doc(db, collectionName, newId), cleanForFirestore(fullItem));
+      // Mirror to `items` collection so event food pre-orders and store menus stay in sync
+      const resolvedStoreId = itemData.storeId || `org_${currentUser.id}`;
+      const matchedStore = stores.find((s) => s.id === resolvedStoreId);
+      const numericPrice = parseFloat(String(itemData.price || '0').replace(/[^0-9.]/g, '')) || 0;
+      const itemDocPayload = cleanForFirestore({
+        id: newId,
+        name: fullItem.name,
+        price: numericPrice || fullItem.price,
+        image: fullItem.imageUrl,
+        imageUrl: fullItem.imageUrl,
+        category: fullItem.category === 'food' ? 'food' : 'drink',
+        subCategory: fullItem.category === 'alcohol' ? 'alcohol' : fullItem.category === 'softdrink' ? 'soft' : undefined,
+        isAlcohol: fullItem.category === 'alcohol',
+        storeId: resolvedStoreId,
+        storeName: matchedStore?.name || currentUser.organisationName || currentUser.assignedStoreName || 'Organizer Menu',
+        ownerId: currentUser.id,
+        available: true,
+        description: fullItem.description,
+        ingredients: fullItem.ingredients,
+        allowIngredientRemoval: fullItem.allowIngredientRemoval,
+      });
+      await setDoc(doc(db, 'items', newId), itemDocPayload);
     } catch (err) {
       console.warn(`Firestore save to ${collectionName} error:`, err);
     }
@@ -6683,14 +7307,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    const newBal = Math.max(0, currentBal - deductAmt);
-
-    // Update in Firestore
+    let newBal = Math.max(0, currentBal - deductAmt);
     try {
-      await setDoc(doc(db, 'users', targetUid), { walletBalance: newBal }, { merge: true });
-      await setDoc(doc(db, 'wallets', targetUid), { balance: newBal }, { merge: true });
-    } catch (err) {
-      console.warn('Firestore balance deduction error:', err);
+      const txResult = await runTransaction(db, async (tx) => {
+        const walletRef = doc(db, 'wallets', targetUid);
+        const userRef = doc(db, 'users', targetUid);
+        const [wSnap, uSnap] = await Promise.all([tx.get(walletRef), tx.get(userRef)]);
+        const remoteWalletBal = wSnap.exists() && typeof wSnap.data()?.balance === 'number'
+          ? Number(wSnap.data().balance)
+          : null;
+        const remoteUserBal = uSnap.exists() && typeof uSnap.data()?.walletBalance === 'number'
+          ? Number(uSnap.data().walletBalance)
+          : null;
+        const authoritativeBal = remoteWalletBal ?? remoteUserBal ?? currentBal;
+        if (authoritativeBal < deductAmt) {
+          throw new Error(`LOW_FUNDS:${authoritativeBal}`);
+        }
+        const updated = Math.round(Math.max(0, authoritativeBal - deductAmt) * 100) / 100;
+        tx.set(walletRef, { userId: targetUid, balance: updated, updatedAt: new Date().toISOString() }, { merge: true });
+        tx.set(userRef, { walletBalance: updated }, { merge: true });
+        return { previous: authoritativeBal, next: updated };
+      });
+      currentBal = txResult.previous;
+      newBal = txResult.next;
+    } catch (err: any) {
+      const msg = String(err?.message || '');
+      if (msg.startsWith('LOW_FUNDS:')) {
+        const latestBal = Number(msg.split(':')[1] || 0);
+        return {
+          success: false,
+          previousBalance: latestBal,
+          newBalance: latestBal,
+          error: `Insufficient balance (Customer has R${latestBal.toFixed(2)}, item is R${deductAmt.toFixed(2)}).`,
+        };
+      }
+      console.warn('Firestore balance deduction notice:', err);
+      await setDoc(doc(db, 'users', targetUid), { walletBalance: newBal }, { merge: true }).catch(() => {});
+      await setDoc(doc(db, 'wallets', targetUid), { balance: newBal }, { merge: true }).catch(() => {});
     }
 
     // Record vendor sale in Firestore
@@ -6986,6 +7639,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const resolvedCustomerName = customerName?.trim() || currentUser?.name || currentUser?.fullName || 'Customer';
     const custQrId = resolveCustomerQrId(currentUser?.id, currentUser?.customerQrId);
 
+    const linkedEvent = eventId ? events.find((ev) => ev.id === eventId) : undefined;
     const newOrder: MallOrder = {
       id: orderId,
       orderNumber,
@@ -6993,6 +7647,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       storeName,
       storeLocation: storeLocation || 'Universal Band Mall',
       storeOwnerId: storeOwnerId || '',
+      eventId: eventId || undefined,
+      eventName: linkedEvent?.title || undefined,
       customerId: currentUser?.id || `guest_${Date.now()}`,
       customerName: resolvedCustomerName,
       customerPhone: cleanPhone,
@@ -7024,8 +7680,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deliveryLng: checkoutType === 'DELIVERY' ? deliveryLng : undefined,
       gpsAccuracy: checkoutType === 'DELIVERY' ? gpsAccuracy : undefined,
       
-      // Step 1: Status = New Order
+      // Step 1: Status = New Order (explicitly PAID on wallet checkout)
       status: 'new_order',
+      paymentStatus: 'PAID',
       
       pickupQrCode: undefined,
       deliveryQrCode: undefined,
@@ -7173,12 +7830,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: `This order belongs to ${matchedOrder.storeName}, not this venue.` };
     }
 
+    if (matchedOrder.paymentStatus === 'WAITING FOR PAYMENT' || matchedOrder.paymentStatus === 'PENDING_PAYMENT') {
+      return {
+        success: false,
+        order: matchedOrder,
+        message: `UNPAID ORDER: Payment for ${matchedOrder.orderNumber} is not approved yet.`,
+      };
+    }
+
+    if (matchedOrder.status === 'cancelled') {
+      return {
+        success: false,
+        order: matchedOrder,
+        message: `CANCELLED: Order ${matchedOrder.orderNumber} has been cancelled.`,
+      };
+    }
+
     // Support Delivery Service Module QR Verification
     if (matchedOrder.collectionMethod === 'DELIVERY') {
-      if (matchedOrder.status === 'ready_for_pickup' || matchedOrder.status === 'paid') {
+      if (
+        matchedOrder.status === 'new_order' ||
+        matchedOrder.status === 'ready_for_pickup' ||
+        matchedOrder.status === 'paid' ||
+        matchedOrder.status === 'driver_assigned'
+      ) {
         return verifyDriverStorePickup(raw, storeId);
       }
-      if (matchedOrder.status === 'out_for_delivery') {
+      if (matchedOrder.status === 'collected_by_driver' || matchedOrder.status === 'out_for_delivery') {
         return verifyCustomerDelivery(raw);
       }
       if (matchedOrder.status === 'delivered') {
@@ -7190,7 +7868,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    if (matchedOrder.status === 'collected') {
+    if (matchedOrder.status === 'collected' || matchedOrder.collectedAt) {
       return {
         success: false,
         order: matchedOrder,
@@ -7245,13 +7923,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Find ready_for_pickup or paid order matching phone number
+    // Find paid ready_for_pickup or paid order matching phone number (exclude unpaid/cancelled/completed)
     const matchedOrders = mallOrders.filter((o) => {
       const oDigits = (o.customerPhone || '').replace(/[^0-9]/g, '');
       const phoneMatch = oDigits.includes(cleanDigits) || cleanDigits.includes(oDigits);
       const storeMatch = !storeId || o.storeId === storeId;
+      const isPaidOrder = o.paymentStatus !== 'WAITING FOR PAYMENT' && o.paymentStatus !== 'PENDING_PAYMENT';
       const statusMatch = o.status === 'ready_for_pickup' || o.status === 'paid';
-      return phoneMatch && storeMatch && statusMatch;
+      return phoneMatch && storeMatch && isPaidOrder && statusMatch && !o.collectedAt && !o.phoneLookupFeeCharged;
     });
 
     if (matchedOrders.length === 0) {
@@ -7260,34 +7939,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         feeCharged: 0,
         storeEarned: 0,
         adminEarned: 0,
-        message: `No active pickup order found for phone number "${customerPhone}".`,
+        message: `No active unpaid-free pickup order found for phone number "${customerPhone}".`,
       };
     }
 
     const orderToCollect = orderId ? matchedOrders.find((o) => o.id === orderId) || matchedOrders[0] : matchedOrders[0];
 
-    // Phone lookup fee distribution: R5 total. R2 to store owner's wallet, R3 to admin ("the rest to me")
+    if (orderToCollect.status === 'collected' || orderToCollect.status === 'delivered' || orderToCollect.phoneLookupFeeCharged) {
+      return {
+        success: false,
+        order: orderToCollect,
+        feeCharged: 0,
+        storeEarned: 0,
+        adminEarned: 0,
+        message: `Order ${orderToCollect.orderNumber} was already collected.`,
+      };
+    }
+
+    // Phone lookup fee distribution: R5 total. R2 to store owner's wallet, R3 to admin
     const feeSplit = getPhoneLookupFeeSplit(); // { totalFee: 5, storeOwnerShare: 2, platformShare: 3 }
     const storeEarned = feeSplit.storeOwnerShare; // R2
     const adminEarned = feeSplit.platformShare; // R3
 
-    // Credit store owner / vendor wallet
-    const activeBal = typeof currentUser?.walletBalance === 'number'
-      ? currentUser.walletBalance
-      : Number(localStorage.getItem('wallet_balance') || 0);
+    const targetStoreOwnerId = orderToCollect.storeOwnerId || stores.find((s) => s.id === orderToCollect.storeId)?.ownerId || currentUser?.id;
 
-    const newOwnerBal = activeBal + storeEarned;
-    localStorage.setItem('wallet_balance', String(newOwnerBal));
-    setCurrentUser((prev) => ({ ...prev, walletBalance: newOwnerBal }));
-    setUserWalletDoc((prev) => ({ ...prev, balance: newOwnerBal }));
+    // Credit real store owner in Firestore (and update active UI balance only if current user IS that owner)
+    if (targetStoreOwnerId) {
+      try {
+        await setDoc(doc(db, 'wallets', targetStoreOwnerId), { balance: increment(storeEarned), updatedAt: new Date().toISOString() }, { merge: true });
+        await setDoc(doc(db, 'users', targetStoreOwnerId), { walletBalance: increment(storeEarned) }, { merge: true });
+      } catch (e) {
+        console.warn('Store owner wallet update notice:', e);
+      }
+    }
 
-    addWalletTransaction({
-      type: 'topup',
-      title: `Phone Lookup Collection Fee (+R${storeEarned}.00)`,
-      subtitle: `Store Share • Order ${orderToCollect.orderNumber} • Phone ${orderToCollect.customerPhone}`,
-      amount: storeEarned,
-      reference: `LOOKUP_FEE_${orderToCollect.orderNumber}`,
-    });
+    if (!targetStoreOwnerId || targetStoreOwnerId === currentUser?.id) {
+      const activeBal = typeof currentUser?.walletBalance === 'number'
+        ? currentUser.walletBalance
+        : Number(localStorage.getItem('wallet_balance') || 0);
+      const newOwnerBal = activeBal + storeEarned;
+      localStorage.setItem('wallet_balance', String(newOwnerBal));
+      setCurrentUser((prev) => ({ ...prev, walletBalance: newOwnerBal }));
+      setUserWalletDoc((prev) => ({ ...prev, balance: newOwnerBal }));
+      addWalletTransaction({
+        type: 'topup',
+        title: `Phone Lookup Collection Fee (+R${storeEarned}.00)`,
+        subtitle: `Store Share • Order ${orderToCollect.orderNumber} • Phone ${orderToCollect.customerPhone}`,
+        amount: storeEarned,
+        reference: `LOOKUP_FEE_${orderToCollect.orderNumber}`,
+      });
+    }
 
     // Credit platform admin wallet in Firestore
     try {
@@ -7341,12 +8042,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const checkIsStoreOnline = (storeId: string): boolean => {
     if (!storeId) return false;
 
-    // 1. If currentUser is owner, promoter or worker of this store, their phone is open and active right now!
+    // 1. If currentUser is owner, organizer, manager, or worker of this store, their phone is active right now
     const roleLower = (currentUser?.role || '').toLowerCase();
     const isCurrentUserStoreStaff =
       currentUser?.assignedStoreId === storeId ||
       roleLower === 'admin' ||
-      (roleLower === 'promoter' && currentUser?.assignedStoreId === storeId) ||
+      ((roleLower === 'promoter' ||
+        roleLower === 'event organiser' ||
+        roleLower === 'organizer' ||
+        roleLower === 'store manager' ||
+        roleLower === 'manager') &&
+        (currentUser?.assignedStoreId === storeId || `org_${currentUser?.id}` === storeId)) ||
       (roleLower === 'worker' && currentUser?.assignedStoreId === storeId);
 
     // 2. Check store presence record
@@ -7359,6 +8065,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (presence.isOnline && ageMs < 180000) {
         return true;
       }
+    }
+
+    // Standalone event pre-order menus (org_{uid}) remain open for upcoming event pre-orders unless manually paused
+    if (storeId.startsWith('org_')) {
+      return true;
     }
 
     if (isCurrentUserStoreStaff) {
@@ -7645,6 +8356,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'This is a customer collection order, not a delivery order.' };
     }
 
+    if (order.paymentStatus === 'WAITING FOR PAYMENT' || order.paymentStatus === 'PENDING_PAYMENT') {
+      return { success: false, message: 'UNPAID ORDER: Customer payment must be approved before driver dispatch.' };
+    }
+
+    if (order.status === 'delivered' || order.status === 'collected' || order.status === 'cancelled') {
+      return { success: false, message: `Order ${order.orderNumber} is already closed (${order.status}).` };
+    }
+
     // Step 4: Lock order to this driver. No other driver can take it.
     if (order.deliveryDriverId && order.deliveryDriverId !== driver.id) {
       return {
@@ -7655,7 +8374,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const pickupPin = order.pickupPin || Math.floor(100000 + Math.random() * 900000).toString();
     const deliveryPin = order.deliveryPin || Math.floor(100000 + Math.random() * 900000).toString();
-    const driverPhoto = driver.photo || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80';
+    const driverPhoto = driver.photo || '';
 
     // Step 4: Status changes to Driver Assigned - [Driver Name] (PIN-based handoff; customer scans use permanent Profile ONE QR)
     const updatedOrder: MallOrder = {
@@ -7769,6 +8488,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'Wrong driver' };
     }
 
+    if (matchedOrder.paymentStatus === 'WAITING FOR PAYMENT' || matchedOrder.paymentStatus === 'PENDING_PAYMENT') {
+      return { success: false, message: `UNPAID ORDER: Payment for Order ${matchedOrder.orderNumber} is not approved yet.`, order: matchedOrder };
+    }
+
+    if (matchedOrder.status === 'collected_by_driver' || matchedOrder.status === 'out_for_delivery' || matchedOrder.driverPickedUpAt) {
+      return {
+        success: false,
+        message: `ALREADY COLLECTED BY DRIVER: Order ${matchedOrder.orderNumber} was already picked up at ${matchedOrder.driverPickedUpAt ? new Date(matchedOrder.driverPickedUpAt).toLocaleTimeString() : 'earlier'}.`,
+        order: matchedOrder,
+      };
+    }
+
+    if (matchedOrder.status === 'delivered' || matchedOrder.status === 'collected' || matchedOrder.status === 'cancelled') {
+      return {
+        success: false,
+        message: `Order ${matchedOrder.orderNumber} is already ${matchedOrder.status}.`,
+        order: matchedOrder,
+      };
+    }
+
     if (storeId && matchedOrder.storeId && matchedOrder.storeId !== storeId) {
       return { success: false, message: 'Wrong driver' };
     }
@@ -7779,8 +8518,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const driverName = matchedOrder.deliveryDriverName || parsedDriverName || 'Driver';
-    const driverPhoto = matchedOrder.deliveryDriverPhoto || parsedDriverPhoto || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80';
-    const driverPlate = matchedOrder.deliveryDriverPlate || parsedDriverPlate || 'Plate Unknown';
+    const driverPhoto = matchedOrder.deliveryDriverPhoto || parsedDriverPhoto || '';
+    const driverPlate = matchedOrder.deliveryDriverPlate || parsedDriverPlate || 'Plate Pending';
 
     return {
       success: true,
@@ -7803,12 +8542,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'Order not found.' };
     }
 
+    if (matchedOrder.status === 'out_for_delivery' || matchedOrder.status === 'collected_by_driver' || matchedOrder.status === 'delivered' || matchedOrder.driverPickedUpAt) {
+      return {
+        success: false,
+        message: `Order ${matchedOrder.orderNumber} was already handed over to driver.`,
+        order: matchedOrder,
+      };
+    }
+
+    if (matchedOrder.paymentStatus === 'WAITING FOR PAYMENT' || matchedOrder.paymentStatus === 'PENDING_PAYMENT') {
+      return {
+        success: false,
+        message: `UNPAID ORDER: Payment for Order ${matchedOrder.orderNumber} has not been approved yet.`,
+      };
+    }
+
+    const nowIso = new Date().toISOString();
     const updatedOrder: MallOrder = {
       ...matchedOrder,
-      status: 'collected_by_driver',
+      status: 'out_for_delivery',
       shopHandoverNote: 'Driver has collected the order. Shop has done its part.',
-      driverPickedUpAt: new Date().toISOString(),
-      collectedAt: new Date().toISOString(),
+      driverPickedUpAt: nowIso,
+      collectedAt: nowIso,
     };
 
     try {
@@ -7825,7 +8580,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {}
 
     // Step 6: Customer gets notification: "Your order has been collected"
-    setWelcomeMessage('Your order has been collected');
+    setWelcomeMessage('Your order has been collected and is on the way');
 
     try {
       confetti({
@@ -7860,6 +8615,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const deliveryMatches = mallOrders.filter((o) => {
       if (o.collectionMethod !== 'DELIVERY') return false;
+      if (driverId && o.deliveryDriverId && o.deliveryDriverId !== driverId) return false;
+      if (o.deliveryPin && o.deliveryPin === raw) return true;
       if (doesOrderMatchCustomerQr(o, scan)) return true;
       const oPhoneDigits = normalizePhoneDigits(o.customerPhone || '');
       const isLast4Match = cleanInputDigits.length >= 4 && oPhoneDigits.endsWith(cleanInputDigits);
@@ -7867,18 +8624,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     const matchedOrder =
+      deliveryMatches.find((o) => o.status === 'out_for_delivery' || o.status === 'collected_by_driver') ||
       deliveryMatches.find((o) => o.status !== 'delivered' && o.status !== 'cancelled') ||
       deliveryMatches[0];
 
     if (!matchedOrder) {
-      return { success: false, message: 'Wrong customer QR code' };
+      return { success: false, message: 'Wrong customer QR code or PIN' };
     }
 
-    if (matchedOrder.status === 'delivered') {
+    if (matchedOrder.paymentStatus === 'WAITING FOR PAYMENT' || matchedOrder.paymentStatus === 'PENDING_PAYMENT') {
+      return {
+        success: false,
+        order: matchedOrder,
+        message: `UNPAID ORDER: Payment for Order ${matchedOrder.orderNumber} is not approved yet.`,
+      };
+    }
+
+    if (matchedOrder.status === 'delivered' || matchedOrder.deliveredAt) {
       return {
         success: false,
         order: matchedOrder,
         message: `Order ${matchedOrder.orderNumber} was ALREADY delivered.`,
+      };
+    }
+
+    if (matchedOrder.status !== 'out_for_delivery' && matchedOrder.status !== 'collected_by_driver') {
+      return {
+        success: false,
+        order: matchedOrder,
+        message: `PICKUP FIRST: Store must scan your driver pickup QR/PIN before customer delivery for Order ${matchedOrder.orderNumber}.`,
       };
     }
 
@@ -7901,16 +8675,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'Order not found.' };
     }
 
-    const deliveryFeeEarned = matchedOrder.deliveryFee || 25;
+    if (matchedOrder.status === 'delivered' || matchedOrder.deliveredAt) {
+      return {
+        success: false,
+        message: `Order ${matchedOrder.orderNumber} was ALREADY delivered and settled.`,
+        order: matchedOrder,
+      };
+    }
+
+    if (matchedOrder.status !== 'out_for_delivery' && matchedOrder.status !== 'collected_by_driver') {
+      return {
+        success: false,
+        message: `Store handover must be completed before marking Order ${matchedOrder.orderNumber} as delivered.`,
+        order: matchedOrder,
+      };
+    }
+
+    const deliveryFeeEarned = typeof matchedOrder.deliveryFee === 'number' && Number.isFinite(matchedOrder.deliveryFee)
+      ? Math.max(0, matchedOrder.deliveryFee)
+      : 0;
 
     // Step 9: Order status changes automatically to Delivered
+    const nowIso = new Date().toISOString();
     const updatedOrder: MallOrder = {
       ...matchedOrder,
       status: 'delivered',
-      deliveredAt: new Date().toISOString(),
+      deliveredAt: nowIso,
       deliveryProof: {
         type: 'QR_SCAN',
-        timestamp: new Date().toISOString(),
+        timestamp: nowIso,
         ...(gpsCoords ? { gps: gpsCoords } : {}),
         notes: `Delivered by Driver ${matchedOrder.deliveryDriverName || currentUser?.name || 'Courier'}`,
       },
@@ -7929,28 +8722,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     } catch (e) {}
 
-    // Step 10: Driver dashboard earnings updated
-    const activeBal = typeof currentUser?.walletBalance === 'number'
-      ? currentUser.walletBalance
-      : Number(localStorage.getItem('wallet_balance') || 0);
+    // Step 10: Driver dashboard earnings updated (exact recorded deliveryFee, credited once)
+    const driverUid = matchedOrder.deliveryDriverId || currentUser?.id;
+    if (deliveryFeeEarned > 0 && driverUid) {
+      try {
+        await setDoc(doc(db, 'wallets', driverUid), { balance: increment(deliveryFeeEarned), updatedAt: nowIso }, { merge: true });
+        await setDoc(doc(db, 'users', driverUid), { walletBalance: increment(deliveryFeeEarned) }, { merge: true });
+      } catch (e) {}
+    }
 
-    const newDriverBal = activeBal + deliveryFeeEarned;
-    try {
-      localStorage.setItem('wallet_balance', String(newDriverBal));
-      setCurrentUser((prev: any) => ({ ...prev, walletBalance: newDriverBal }));
-      setUserWalletDoc((prev: any) => ({ ...prev, balance: newDriverBal }));
-      if (currentUser?.id) {
-        setDoc(doc(db, 'wallets', currentUser.id), { balance: newDriverBal }, { merge: true }).catch(() => {});
+    if (!driverUid || driverUid === currentUser?.id) {
+      const activeBal = typeof currentUser?.walletBalance === 'number'
+        ? currentUser.walletBalance
+        : Number(localStorage.getItem('wallet_balance') || 0);
+      const newDriverBal = activeBal + deliveryFeeEarned;
+      try {
+        localStorage.setItem('wallet_balance', String(newDriverBal));
+        setCurrentUser((prev: any) => ({ ...prev, walletBalance: newDriverBal }));
+        setUserWalletDoc((prev: any) => ({ ...prev, balance: newDriverBal }));
+      } catch (e) {}
+
+      if (deliveryFeeEarned > 0) {
+        addWalletTransaction({
+          type: 'topup',
+          title: `Delivery Complete (+R${deliveryFeeEarned.toFixed(2)})`,
+          subtitle: `Completed ${matchedOrder.orderNumber} for ${matchedOrder.customerName}`,
+          amount: deliveryFeeEarned,
+          reference: `DELIVERY_${matchedOrder.orderNumber}`,
+        });
       }
-    } catch (e) {}
-
-    addWalletTransaction({
-      type: 'topup',
-      title: `Delivery Complete (+R${deliveryFeeEarned.toFixed(2)})`,
-      subtitle: `Completed ${matchedOrder.orderNumber} for ${matchedOrder.customerName}`,
-      amount: deliveryFeeEarned,
-      reference: `DELIVERY_${matchedOrder.orderNumber}`,
-    });
+    }
 
     // Step 9: Customer gets notification: "Your order has been delivered"
     // Driver gets notification: "Delivery Complete"
@@ -7967,7 +8768,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return {
       success: true,
-      message: 'Delivery Complete',
+      message: deliveryFeeEarned > 0 ? `Delivery Complete! +R${deliveryFeeEarned.toFixed(2)} credited.` : 'Delivery Complete!',
       order: updatedOrder,
     };
   };
@@ -8007,6 +8808,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cancelAdminLogin,
         terminateAdminSession,
         wipeAndReset,
+        purgeTestDataForGoLive,
         menuFood,
         menuAlcohol,
         menuSoftDrinks,
@@ -8042,6 +8844,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         storeRequests,
         buyTicket,
         buyTicketWithPayShap,
+        buyTicketWithPayFast,
+        adminApproveTicketPayment,
         updateTicketPaymentStatus,
         confirmTicketPaymentManually,
         confirmMallOrderPaymentManually,

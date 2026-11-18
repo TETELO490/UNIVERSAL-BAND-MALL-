@@ -7,6 +7,7 @@ import {
   parseCustomerQrScan,
   doesTicketMatchCustomerQr,
 } from '../utils/customerQr';
+import { isTicketPaid } from '../utils/ticketStatus';
 
 /**
  * Universal Band - Fixed QR Ticket Scanner Component
@@ -85,7 +86,7 @@ export default function Scanner({ onTicketVerified, onClose, mode = 'ticket' }) 
   };
 
   // -------------------------------------------------------------
-  // Ticket Verification Logic (Real Local Cache + Firestore)
+  // Ticket Verification Logic (Firestore Source of Truth + Local Cache)
   // -------------------------------------------------------------
   const verifyTicket = async (decodedText) => {
     const raw = (decodedText || '').trim();
@@ -108,7 +109,6 @@ export default function Scanner({ onTicketVerified, onClose, mode = 'ticket' }) 
 
     let ticketId = scan.ticketId || scan.bandCode || scan.customerQrId || scan.userId || raw;
     let attendeeName = scan.name || 'Attendee';
-    let isAlreadyUsed = false;
 
     const cleanKey = (ticketId || '').trim().toLowerCase();
     if (!cleanKey && !scan.customerQrId && !scan.userId && !scan.phone) {
@@ -122,52 +122,104 @@ export default function Scanner({ onTicketVerified, onClose, mode = 'ticket' }) 
       };
     }
 
-    // 2. Check Universal Band tickets database in localStorage
+    const isTicketAlreadyUsed = (t) => {
+      if (!t) return false;
+      const cs = (t.status || '').toLowerCase();
+      const ca = (t.attendanceStatus || '').toUpperCase();
+      return (
+        cs === 'used' ||
+        cs === 'inside' ||
+        ca === 'INSIDE' ||
+        ca === 'EXITED' ||
+        Boolean(t.checkedAt) ||
+        Boolean(t.checkedInAt) ||
+        (Array.isArray(t.attendanceLogs) && t.attendanceLogs.length > 0)
+      );
+    };
+
+    const pickBestTicket = (list) => {
+      if (!Array.isArray(list) || list.length === 0) return null;
+      return (
+        list.find((t) => isTicketPaid(t) && !isTicketAlreadyUsed(t)) ||
+        list.find((t) => isTicketPaid(t)) ||
+        list[0]
+      );
+    };
+
+    let matchedDocId = null;
+    let matchedData = null;
+
+    // 1. Verify against Firestore tickets collection first (real source of truth across all devices)
+    try {
+      if (scan.ticketId && !scan.ticketId.includes('/')) {
+        const directSnap = await getDoc(doc(db, 'tickets', scan.ticketId.trim()));
+        if (directSnap.exists()) {
+          matchedDocId = directSnap.id;
+          matchedData = { id: directSnap.id, ...directSnap.data() };
+        }
+      }
+      if (!matchedData && ticketId && !ticketId.includes('/')) {
+        const directSnap = await getDoc(doc(db, 'tickets', ticketId.trim()));
+        if (directSnap.exists()) {
+          matchedDocId = directSnap.id;
+          matchedData = { id: directSnap.id, ...directSnap.data() };
+        }
+      }
+      if (!matchedData && scan.customerQrId) {
+        const snapQr = await getDocs(query(collection(db, 'tickets'), where('customerQrId', '==', scan.customerQrId)));
+        if (!snapQr.empty) {
+          const candidates = snapQr.docs.map((d) => ({ id: d.id, ...d.data() }));
+          const chosen = pickBestTicket(candidates);
+          if (chosen) {
+            matchedDocId = chosen.id;
+            matchedData = chosen;
+          }
+        }
+      }
+      if (!matchedData && (scan.userId || scan.customerId)) {
+        const uidVal = scan.userId || scan.customerId;
+        const snapUid = await getDocs(query(collection(db, 'tickets'), where('userId', '==', uidVal)));
+        if (!snapUid.empty) {
+          const candidates = snapUid.docs.map((d) => ({ id: d.id, ...d.data() }));
+          const chosen = pickBestTicket(candidates);
+          if (chosen) {
+            matchedDocId = chosen.id;
+            matchedData = chosen;
+          }
+        }
+      }
+      if (!matchedData && ticketId) {
+        const snapTicket = await getDocs(query(collection(db, 'tickets'), where('ticketId', '==', ticketId.trim())));
+        if (!snapTicket.empty) {
+          matchedDocId = snapTicket.docs[0].id;
+          matchedData = { id: snapTicket.docs[0].id, ...snapTicket.docs[0].data() };
+        } else {
+          const snapBand = await getDocs(query(collection(db, 'tickets'), where('bandCode', '==', ticketId.trim())));
+          if (!snapBand.empty) {
+            matchedDocId = snapBand.docs[0].id;
+            matchedData = { id: snapBand.docs[0].id, ...snapBand.docs[0].data() };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Error verifying with Firestore tickets:', e);
+    }
+
+    // 2. Fallback / merge with localStorage cache (e.g. if offline)
+    let savedList = null;
     try {
       const savedTicketsRaw = localStorage.getItem('ub_user_tickets');
       if (savedTicketsRaw) {
-        const savedList = JSON.parse(savedTicketsRaw);
-        if (Array.isArray(savedList)) {
-          const matches = savedList.filter((t) => doesTicketMatchCustomerQr(t, scan));
-          const match =
-            matches.find((t) => {
-              const s = (t.status || '').toLowerCase();
-              const a = (t.attendanceStatus || '').toUpperCase();
-              return s !== 'used' && s !== 'inside' && a !== 'INSIDE';
-            }) || matches[0];
-
-          if (match) {
-            attendeeName = match.attendeeName || match.customerName || attendeeName;
-            const currentStatus = (match.status || '').toLowerCase();
-            const attendanceStatus = (match.attendanceStatus || '').toUpperCase();
-
-            if (currentStatus === 'used' || currentStatus === 'inside' || attendanceStatus === 'INSIDE') {
-              isAlreadyUsed = true;
-            } else {
-              match.status = 'inside';
-              match.attendanceStatus = 'INSIDE';
-              match.insideSince = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              localStorage.setItem('ub_user_tickets', JSON.stringify(savedList));
+        const parsed = JSON.parse(savedTicketsRaw);
+        if (Array.isArray(parsed)) {
+          savedList = parsed;
+          if (!matchedData) {
+            const matches = parsed.filter((t) => doesTicketMatchCustomerQr(t, scan));
+            const localMatch = pickBestTicket(matches);
+            if (localMatch) {
+              matchedDocId = localMatch.id || localMatch.ticketId;
+              matchedData = localMatch;
             }
-
-            if (isAlreadyUsed) {
-              return {
-                isValid: false,
-                reason: 'ALREADY USED',
-                message: 'INVALID / ALREADY USED',
-                ticketId: match.ticketId || match.id,
-                name: attendeeName,
-                rawText: raw,
-              };
-            }
-
-            return {
-              isValid: true,
-              message: `VALID - ${attendeeName}`,
-              ticketId: match.ticketId || match.id,
-              name: attendeeName,
-              rawText: raw,
-            };
           }
         }
       }
@@ -175,102 +227,93 @@ export default function Scanner({ onTicketVerified, onClose, mode = 'ticket' }) 
       console.warn('Error verifying with localStorage:', e);
     }
 
-    // 3. Verify against Firestore tickets collection (supports direct ticket ID, ticketId, bandCode, customerQrId, and userId)
-    try {
-      let matchedDocId = null;
-      let matchedData = null;
+    if (matchedData) {
+      attendeeName = matchedData.attendeeName || matchedData.customerName || attendeeName;
+      const resolvedId = matchedData.ticketId || matchedDocId || ticketId;
 
-      if (scan.ticketId && !scan.ticketId.includes('/')) {
-        const directSnap = await getDoc(doc(db, 'tickets', scan.ticketId.trim()));
-        if (directSnap.exists()) {
-          matchedDocId = directSnap.id;
-          matchedData = directSnap.data();
-        }
-      }
-      if (!matchedData && ticketId && !ticketId.includes('/')) {
-        const directSnap = await getDoc(doc(db, 'tickets', ticketId.trim()));
-        if (directSnap.exists()) {
-          matchedDocId = directSnap.id;
-          matchedData = directSnap.data();
-        }
-      }
-      if (!matchedData && scan.customerQrId) {
-        const snapQr = await getDocs(query(collection(db, 'tickets'), where('customerQrId', '==', scan.customerQrId)));
-        if (!snapQr.empty) {
-          const unusedDoc =
-            snapQr.docs.find((d) => {
-              const dt = d.data();
-              const cs = (dt.status || '').toLowerCase();
-              const ca = (dt.attendanceStatus || '').toUpperCase();
-              return cs !== 'used' && cs !== 'inside' && ca !== 'INSIDE';
-            }) || snapQr.docs[0];
-          matchedDocId = unusedDoc.id;
-          matchedData = unusedDoc.data();
-        }
-      }
-      if (!matchedData && (scan.userId || scan.customerId)) {
-        const uidVal = scan.userId || scan.customerId;
-        const snapUid = await getDocs(query(collection(db, 'tickets'), where('userId', '==', uidVal)));
-        if (!snapUid.empty) {
-          const unusedDoc =
-            snapUid.docs.find((d) => {
-              const dt = d.data();
-              const cs = (dt.status || '').toLowerCase();
-              const ca = (dt.attendanceStatus || '').toUpperCase();
-              return cs !== 'used' && cs !== 'inside' && ca !== 'INSIDE';
-            }) || snapUid.docs[0];
-          matchedDocId = unusedDoc.id;
-          matchedData = unusedDoc.data();
-        }
-      }
-      if (!matchedData && ticketId) {
-        const snapTicket = await getDocs(query(collection(db, 'tickets'), where('ticketId', '==', ticketId.trim())));
-        if (!snapTicket.empty) {
-          matchedDocId = snapTicket.docs[0].id;
-          matchedData = snapTicket.docs[0].data();
-        } else {
-          const snapBand = await getDocs(query(collection(db, 'tickets'), where('bandCode', '==', ticketId.trim())));
-          if (!snapBand.empty) {
-            matchedDocId = snapBand.docs[0].id;
-            matchedData = snapBand.docs[0].data();
-          }
-        }
-      }
-
-      if (matchedData) {
-        attendeeName = matchedData.attendeeName || matchedData.customerName || attendeeName;
-        const currentStatus = (matchedData.status || '').toLowerCase();
-        const attendanceStatus = (matchedData.attendanceStatus || '').toUpperCase();
-
-        if (currentStatus === 'used' || currentStatus === 'inside' || attendanceStatus === 'INSIDE') {
-          return {
-            isValid: false,
-            reason: 'ALREADY USED',
-            message: 'INVALID / ALREADY USED',
-            ticketId: matchedData.ticketId || matchedDocId || ticketId,
-            name: attendeeName,
-            rawText: raw,
-          };
-        }
-
-        if (matchedDocId) {
-          await updateDoc(doc(db, 'tickets', matchedDocId), {
-            status: 'inside',
-            attendanceStatus: 'INSIDE',
-            insideSince: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          }).catch(() => {});
-        }
-
+      if (!isTicketPaid(matchedData)) {
         return {
-          isValid: true,
-          message: `VALID - ${attendeeName}`,
-          ticketId: matchedData.ticketId || matchedDocId || ticketId,
+          isValid: false,
+          reason: 'PAYMENT PENDING',
+          message: 'INVALID — PAYMENT NOT APPROVED',
+          ticketId: resolvedId,
           name: attendeeName,
           rawText: raw,
         };
       }
-    } catch (e) {
-      console.warn('Error verifying with Firestore tickets:', e);
+
+      if (isTicketAlreadyUsed(matchedData)) {
+        return {
+          isValid: false,
+          reason: 'ALREADY USED',
+          message: 'INVALID / ALREADY USED',
+          ticketId: resolvedId,
+          name: attendeeName,
+          rawText: raw,
+        };
+      }
+
+      // First valid scan -> permanently invalidate single-use QR code in Firestore & local cache
+      const nowIso = new Date().toISOString();
+      const timeFormatted = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      const existingLogs = Array.isArray(matchedData.attendanceLogs)
+        ? matchedData.attendanceLogs
+        : [];
+      const newLogs = [
+        ...existingLogs,
+        {
+          action: 'CHECK_IN',
+          timestamp: nowIso,
+          timeFormatted,
+          bouncerName: 'Gate Scanner',
+          bouncerRole: 'Scanner',
+          notes: 'Single-use QR scan',
+        },
+      ];
+
+      if (matchedDocId) {
+        await updateDoc(doc(db, 'tickets', matchedDocId), {
+          status: 'inside',
+          attendanceStatus: 'INSIDE',
+          insideSince: timeFormatted,
+          lastMovementAt: timeFormatted,
+          checkedAt: nowIso,
+          checkedInAt: nowIso,
+          attendanceLogs: newLogs,
+        }).catch(() => {});
+      }
+
+      if (savedList) {
+        try {
+          const updatedLocal = savedList.map((t) =>
+            t.id === matchedDocId || t.ticketId === resolvedId
+              ? {
+                  ...t,
+                  status: 'inside',
+                  attendanceStatus: 'INSIDE',
+                  insideSince: timeFormatted,
+                  lastMovementAt: timeFormatted,
+                  checkedAt: nowIso,
+                  checkedInAt: nowIso,
+                  attendanceLogs: newLogs,
+                }
+              : t
+          );
+          localStorage.setItem('ub_user_tickets', JSON.stringify(updatedLocal));
+        } catch {}
+      }
+
+      return {
+        isValid: true,
+        message: `VALID - ${attendeeName}`,
+        ticketId: resolvedId,
+        name: attendeeName,
+        rawText: raw,
+      };
     }
 
     // No valid ticket found in local cache or Firestore

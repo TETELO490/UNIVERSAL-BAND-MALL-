@@ -61,8 +61,9 @@ export const VendorOrderPickupModal: React.FC<VendorOrderPickupModalProps> = ({
         const oDigits = (o.customerPhone || '').replace(/[^0-9]/g, '');
         const phoneMatch = oDigits.includes(cleanDigits) || cleanDigits.includes(oDigits);
         const storeMatch = !storeId || o.storeId === storeId;
+        const isPaidOrder = o.paymentStatus !== 'WAITING FOR PAYMENT' && o.paymentStatus !== 'PENDING_PAYMENT';
         const statusMatch = o.status === 'ready_for_pickup' || o.status === 'paid' || o.status === 'driver_assigned';
-        return phoneMatch && storeMatch && statusMatch;
+        return phoneMatch && storeMatch && isPaidOrder && statusMatch;
       })
     : [];
 

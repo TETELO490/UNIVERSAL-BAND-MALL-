@@ -33,8 +33,15 @@ import {
 } from '../../utils/attendanceService';
 import { hasEventDateArrived } from '../../utils/dateHelper';
 import { parseCustomerQrScan, doesTicketMatchCustomerQr } from '../../utils/customerQr';
+import { isTicketPaid } from '../../utils/ticketStatus';
 import Scanner from '../Scanner';
 import { ensureCameraPermission } from '../../utils/nativePermissions';
+import {
+  getRoleScopedTickets,
+  getUserOwnedStoreIds,
+  getUserOwnedEventIds,
+  isUserVerifiedAdminSession,
+} from '../../utils/legacyCleanup';
 
 interface TicketQrScannerModalProps {
   isOpen?: boolean;
@@ -97,21 +104,31 @@ export const TicketQrScannerModal: React.FC<TicketQrScannerModalProps> = ({
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [isSyncingOffline, setIsSyncingOffline] = useState<boolean>(false);
 
-  const isAdmin = currentUser.role === 'Admin';
-  const isPromoter = currentUser.role === 'Promoter';
-  const promoterStoreId = currentUser.assignedStoreId || '';
+  const isAdmin = isUserVerifiedAdminSession(currentUser);
+  const roleLower = (currentUser?.role || '').toLowerCase();
+  const isPromoter =
+    !isAdmin &&
+    (roleLower === 'promoter' ||
+      roleLower === 'event organiser' ||
+      roleLower === 'organizer');
+  const ownedStoreIds = useMemo(
+    () => getUserOwnedStoreIds(currentUser, stores),
+    [currentUser, stores]
+  );
+  const ownedEventIds = useMemo(
+    () => getUserOwnedEventIds(currentUser, events, stores),
+    [currentUser, events, stores]
+  );
+  const promoterStoreId = currentUser?.assignedStoreId || '';
   const promoterStoreName =
-    currentUser.assignedStoreName ||
+    currentUser?.assignedStoreName ||
     stores.find((s) => s.id === promoterStoreId)?.name ||
-    'Assigned Venue';
+    'Your Event / Venue';
 
-  // Determine scoped tickets based on promoter vs admin permissions
+  // Strictly scope tickets to user's own events/stores unless verified Admin
   const scopedTickets = useMemo(() => {
-    if (isPromoter && promoterStoreId) {
-      return tickets.filter((t) => t.storeId === promoterStoreId);
-    }
-    return tickets;
-  }, [tickets, isPromoter, promoterStoreId]);
+    return getRoleScopedTickets({ tickets, currentUser, events, stores });
+  }, [tickets, currentUser, events, stores]);
 
   // Phone Search filtered results
   const matchedPhoneTickets = useMemo(() => {
@@ -244,10 +261,20 @@ export const TicketQrScannerModal: React.FC<TicketQrScannerModalProps> = ({
       );
       return (
         matches.find((t) => {
-          const att = t.attendanceStatus || (t.status === 'used' ? 'INSIDE' : 'OUTSIDE');
+          const att = t.attendanceStatus || (t.status === 'used' || (t.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
           const exp = t.status?.toLowerCase() === 'expired' || t.status?.toLowerCase() === 'binned' || (t as any).isBinned;
-          return att !== 'INSIDE' && !exp;
-        }) || matches[0]
+          const used =
+            t.status === 'used' ||
+            (t.status as string) === 'inside' ||
+            att === 'INSIDE' ||
+            att === 'EXITED' ||
+            Boolean(t.checkedAt) ||
+            Boolean((t as any).checkedInAt) ||
+            (Array.isArray(t.attendanceLogs) && t.attendanceLogs.length > 0);
+          return isTicketPaid(t) && !used && !exp;
+        }) ||
+        matches.find((t) => isTicketPaid(t)) ||
+        matches[0]
       );
     };
 
@@ -344,16 +371,20 @@ export const TicketQrScannerModal: React.FC<TicketQrScannerModalProps> = ({
       return;
     }
 
-    // 5. Promoter Venue Authorization check
-    if (isPromoter && promoterStoreId && matched.storeId !== promoterStoreId) {
-      playFeedbackSound('error');
-      setValidationResult({
-        status: 'unauthorized-venue',
-        message: `UNAUTHORIZED VENUE: This ticket is for "${matched.storeName}". You can only validate passes for "${promoterStoreName}".`,
-        ticket: matched,
-      });
-      setIsProcessing(false);
-      return;
+    // 5. Promoter / Organizer Venue & Event Authorization check
+    if (!isAdmin) {
+      const ownsMatchedEvent = Boolean(matched.eventId && ownedEventIds.has(matched.eventId));
+      const ownsMatchedStore = Boolean(matched.storeId && ownedStoreIds.has(matched.storeId));
+      if (!ownsMatchedEvent && !ownsMatchedStore) {
+        playFeedbackSound('error');
+        setValidationResult({
+          status: 'unauthorized-venue',
+          message: `UNAUTHORIZED VENUE: This ticket is for "${matched.storeName || matched.eventTitle}". You can only validate passes for ${promoterStoreName}.`,
+          ticket: matched,
+        });
+        setIsProcessing(false);
+        return;
+      }
     }
 
     // 6. Expired / Binned check
@@ -367,6 +398,18 @@ export const TicketQrScannerModal: React.FC<TicketQrScannerModalProps> = ({
       setValidationResult({
         status: 'expired',
         message: `EXPIRED PASS: Ticket ${matched.ticketId || matched.id} has expired or was moved to the recycle bin.`,
+        ticket: matched,
+      });
+      setIsProcessing(false);
+      return;
+    }
+
+    // 6.5. Payment Approval check
+    if (!isTicketPaid(matched)) {
+      playFeedbackSound('error');
+      setValidationResult({
+        status: 'invalid',
+        message: `PAYMENT NOT APPROVED: Ticket ${matched.ticketId || matched.id} is waiting for payment approval and is not valid yet.`,
         ticket: matched,
       });
       setIsProcessing(false);
@@ -389,36 +432,29 @@ export const TicketQrScannerModal: React.FC<TicketQrScannerModalProps> = ({
       return;
     }
 
-    // 8. Attendance Status Logic
+    // 8. Attendance Status Logic (Single-Use QR Code Enforcement)
     const currentAttendance: AttendanceStatus =
       matched.attendanceStatus ||
       (matched.status === 'used' || (matched.status as string) === 'inside' ? 'INSIDE' : 'OUTSIDE');
     const attendeeDisplayName = matched.attendeeName || matched.customerName || 'Attendee';
     const movementTime = formatMovementTime(new Date());
 
-    // Scenario A: ALREADY INSIDE (Duplicate scan)
-    if (currentAttendance === 'INSIDE') {
-      playFeedbackSound('already-inside');
-      const insideSinceTime = matched.insideSince || matched.lastMovementAt || movementTime;
-      setValidationResult({
-        status: 'already-inside',
-        message: `ALREADY INSIDE - Since ${insideSinceTime}`,
-        ticket: matched,
-        movementTime: insideSinceTime,
-      });
-      setIsProcessing(false);
-      return;
-    }
+    const alreadyScannedOnce =
+      matched.status === 'used' ||
+      (matched.status as string) === 'inside' ||
+      currentAttendance === 'INSIDE' ||
+      currentAttendance === 'EXITED' ||
+      Boolean(matched.checkedAt) ||
+      Boolean((matched as any).checkedInAt) ||
+      (Array.isArray(matched.attendanceLogs) && matched.attendanceLogs.length > 0);
 
-    // Scenario B: EXITED (Re-entry scenario)
-    if (currentAttendance === 'EXITED') {
-      playFeedbackSound('exited');
-      const exitTime = matched.exitedAt || matched.lastMovementAt || movementTime;
+    if (alreadyScannedOnce) {
+      playFeedbackSound('error');
       setValidationResult({
-        status: 'exited',
-        message: `EXITED at ${exitTime} - ALLOWED TO RE-ENTER`,
+        status: 'invalid',
+        message: `INVALID / ALREADY USED: This QR code was already scanned once and is no longer valid.`,
         ticket: matched,
-        movementTime: exitTime,
+        movementTime: matched.insideSince || matched.lastMovementAt || movementTime,
       });
       setIsProcessing(false);
       return;

@@ -9,6 +9,8 @@ import {
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { SpendingTransaction } from '../types';
+import { isTicketPaid } from '../utils/ticketStatus';
+import { doesUserPersonallyOwnTicket, isLegacyTestTicket } from '../utils/legacyCleanup';
 import {
   History,
   Wallet,
@@ -91,15 +93,18 @@ export const HistoryPage: React.FC = () => {
     return () => unsubscribe();
   }, [walletId]);
 
-  // 2. Synthesize complete transaction history combining Firestore, Tickets, Reservations, and Wallet
+  // 2. Synthesize complete transaction history strictly for currentUser only
   const allTransactions: SpendingTransaction[] = useMemo(() => {
+    if (!walletId) return [];
+
     const combined: SpendingTransaction[] = [...firestoreTransactions];
     const existingIds = new Set(combined.map((t) => t.id));
 
-    // Also load local storage spending transactions
+    // Also load local storage spending transactions owned strictly by walletId
     try {
       const localSpending = JSON.parse(localStorage.getItem('ub_spending_history') || '[]');
       for (const item of localSpending) {
+        if (!item || item.userId !== walletId) continue;
         if (!existingIds.has(item.id)) {
           combined.push({
             id: item.id,
@@ -119,8 +124,11 @@ export const HistoryPage: React.FC = () => {
       }
     } catch (e) {}
 
-    // Integrate tickets as ticket purchases
+    // Integrate ONLY paid tickets personally owned by currentUser (no other customers' or legacy tickets)
     for (const t of tickets) {
+      if (isLegacyTestTicket(t)) continue;
+      if (!doesUserPersonallyOwnTicket(t, currentUser)) continue;
+      if (!isTicketPaid(t)) continue;
       const ticketTxId = `tx-ticket-${t.id}`;
       if (!existingIds.has(ticketTxId)) {
         const priceNum = parseFloat(t.price.replace(/[^\d.]/g, '')) || 0;
@@ -134,26 +142,27 @@ export const HistoryPage: React.FC = () => {
           amount: priceNum,
           storeId: t.storeId,
           storeName: t.storeName,
-          paymentMethod: 'Wallet',
+          paymentMethod: t.payshapReference ? 'PayShap' : 'Wallet',
           status: (t.status === 'valid' || t.status === 'Valid') ? 'Paid' : 'Used',
           reference: t.ticketId || t.bandCode,
           timestamp: null,
-          createdAt: t.createdAt || t.purchaseDate || new Date().toISOString(),
+          createdAt: t.paidAt || t.createdAt || t.purchaseDate || new Date().toISOString(),
         });
         existingIds.add(ticketTxId);
       }
     }
 
-    // Integrate wallet top-ups
+    // Integrate wallet top-ups belonging to this user
     for (const wt of walletTransactions) {
+      if (wt.userId && wt.userId !== walletId) continue;
       const wtId = wt.id || `tx-topup-${wt.date}`;
       if (!existingIds.has(wtId)) {
         combined.push({
           id: wtId,
           userId: walletId,
-          type: 'topup',
+          type: wt.type === 'refund' ? 'refund' : wt.type === 'purchase' ? 'food' : 'topup',
           description: wt.title || 'Wallet Top-Up',
-          amount: wt.amount, // positive
+          amount: Math.abs(wt.amount),
           paymentMethod: wt.subtitle?.includes('Card') ? 'Card' : 'OneVoucher',
           status: 'Paid',
           reference: wt.reference,
@@ -172,7 +181,7 @@ export const HistoryPage: React.FC = () => {
     });
 
     return combined;
-  }, [firestoreTransactions, tickets, walletTransactions, walletId]);
+  }, [firestoreTransactions, tickets, walletTransactions, walletId, currentUser]);
 
   // 3. Filter by Date & Type
   const filteredTransactions = useMemo(() => {

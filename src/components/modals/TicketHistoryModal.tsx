@@ -1,24 +1,27 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { isEventExpired } from '../../utils/dateHelper';
+import { getRoleScopedTickets } from '../../utils/legacyCleanup';
 import { X, Ticket as TicketIcon, Calendar, MapPin, Clock, History, CheckCircle2 } from 'lucide-react';
 
 export const TicketHistoryModal: React.FC = () => {
-  const { tickets, activeModal, setActiveModal, setSelectedTicket } = useApp();
+  const { tickets, currentUser, events, stores, activeModal, setActiveModal, setSelectedTicket } = useApp();
+
+  const historyTickets = useMemo(() => {
+    const scoped = getRoleScopedTickets({ tickets, currentUser, events, stores });
+    return scoped.filter((t) => {
+      return (
+        isEventExpired(t) ||
+        t.status === 'expired' ||
+        t.status === 'billed' ||
+        (t.status as string) === 'Billed' ||
+        t.isBilled ||
+        t.isEventOver
+      );
+    });
+  }, [tickets, currentUser, events, stores]);
 
   if (activeModal !== 'ticket-history') return null;
-
-  // Filter expired / past / billed tickets for ticket history
-  const historyTickets = tickets.filter((t) => {
-    return (
-      isEventExpired(t) ||
-      t.status === 'expired' ||
-      t.status === 'billed' ||
-      (t.status as string) === 'Billed' ||
-      t.isBilled ||
-      t.isEventOver
-    );
-  });
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">

@@ -17,6 +17,7 @@ export interface Store {
 export interface EventItem {
   id: string;
   storeId: string;
+  storeName?: string;
   title: string;
   date: string;
   event_date?: string; // date + time
@@ -26,6 +27,8 @@ export interface EventItem {
   status: 'Open' | 'Closed';
   category: 'Events' | 'Food' | 'Drinks';
   creatorId?: string;
+  organizerId?: string;
+  creatorName?: string;
   description?: string;
   ticketsAvailable?: number;
   ticketsSold?: number;
@@ -151,9 +154,13 @@ export interface Ticket {
   createdAt: string;
   quantity?: number;
   paymentStatus?: 'PENDING_PAYMENT' | 'WAITING FOR PAYMENT' | 'PAID' | 'VERIFIED';
+  paymentMethod?: 'PayFast' | 'PayShap' | 'Wallet' | string;
   payshapReference?: string;
   payshapRequestSent?: boolean;
   payshapRequestSentAt?: string;
+  payfastReference?: string;
+  approvedBy?: string;
+  approvedAt?: string;
   paidAt?: string;
   verifiedSmsText?: string;
   checkedBy?: string;
@@ -223,6 +230,7 @@ export interface StoreRequest {
 export interface MenuItem {
   id: string;
   storeId?: string;
+  creatorId?: string;
   name: string;
   price: string;
   imageUrl?: string;
@@ -322,6 +330,8 @@ export interface ReservationDoc {
   beneficiaryPhoto?: string;
   collectionCode?: string; // Short code e.g. UB-RES-9482
   collectionNote?: string; // "Use this ID to collect your food if you don't have QR or NFC"
+  createdAt?: any;
+  removedIngredients?: string[];
 }
 
 export interface BinnedItem {
@@ -358,7 +368,7 @@ export interface SpendingTransaction {
   amount: number; // positive for topup/refund, negative for spending
   storeId?: string;
   storeName?: string;
-  paymentMethod: 'Wallet' | 'Card' | 'Cashless Band' | 'OneVoucher' | 'Universal Band Wristband';
+  paymentMethod: 'Wallet' | 'Card' | 'Cashless Band' | 'OneVoucher' | 'Universal Band Wristband' | 'PayShap';
   status: 'Paid' | 'Used' | 'Cancelled' | 'Refunded' | 'Billed';
   reference?: string;
   timestamp: any;
@@ -396,6 +406,7 @@ export interface WalletDoc {
 
 export interface WalletTransaction {
   id: string;
+  userId?: string;
   type: 'topup' | 'purchase' | 'refund';
   title: string;
   subtitle: string;
@@ -442,6 +453,8 @@ export interface MallOrder {
   storeName: string;
   storeLocation?: string;
   storeOwnerId?: string;
+  eventId?: string;
+  eventName?: string;
   customerId: string;
   customerQrId?: string;
   customerName: string;
@@ -573,6 +586,8 @@ export interface SupportTicketAttachment {
   ticketTier?: string;
   price: string;
   payshapReference?: string;
+  payfastReference?: string;
+  paymentMethod?: string;
   purchaseDate?: string;
   customerName: string;
   customerPhone?: string;
