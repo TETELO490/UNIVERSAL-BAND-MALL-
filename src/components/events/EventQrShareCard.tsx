@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { QrCode, Download, Copy, Check, ExternalLink } from 'lucide-react';
+import { QrCode, Download, Copy, Check, ExternalLink, Share2 } from 'lucide-react';
 import { EventItem } from '../../types';
 import { useApp } from '../../context/AppContext';
 import {
@@ -8,6 +8,7 @@ import {
   getEventRoutePath,
   copyTextToClipboard,
   downloadEventQrPng,
+  shareEventQrPng,
 } from '../../utils/eventLinkHelper';
 
 interface EventQrShareCardProps {
@@ -16,13 +17,21 @@ interface EventQrShareCardProps {
 }
 
 export const EventQrShareCard: React.FC<EventQrShareCardProps> = ({ event, compact = false }) => {
-  const { events, navigateTo } = useApp();
+  const { events, navigateTo, appBaseUrl } = useApp();
   const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
+  // Reference appBaseUrl so this card re-renders immediately when Admin updates Domain / Base URL
+  void appBaseUrl;
   const eventUrl = getEventShareUrl(event, events);
   const routePath = getEventRoutePath(event, events);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  };
 
   const handleCopyLink = async () => {
     const ok = await copyTextToClipboard(eventUrl);
@@ -36,7 +45,17 @@ export const EventQrShareCard: React.FC<EventQrShareCardProps> = ({ event, compa
     const ok = downloadEventQrPng(qrCanvasRef.current, event, eventUrl, events);
     if (ok) {
       setDownloaded(true);
-      setTimeout(() => setDownloaded(false), 2500);
+      showToast('QR Downloaded to Phone');
+      setTimeout(() => setDownloaded(false), 3000);
+    }
+  };
+
+  const handleShareQr = async () => {
+    const res = await shareEventQrPng(qrCanvasRef.current, event, eventUrl, events);
+    if (res.shared) {
+      showToast('QR Shared!');
+    } else if (res.fallbackCopied) {
+      showToast('Link copied — paste into WhatsApp or Facebook');
     }
   };
 
@@ -57,6 +76,13 @@ export const EventQrShareCard: React.FC<EventQrShareCardProps> = ({ event, compa
           <ExternalLink className="w-3 h-3" />
         </button>
       </div>
+
+      {toastMsg && (
+        <div className="bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 text-[11px] font-bold px-3 py-2 rounded-xl flex items-center gap-1.5">
+          <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
 
       <div className={`flex ${compact ? 'items-center gap-3' : 'flex-col sm:flex-row items-center gap-3'}`}>
         {/* Live QR Code rendered directly from unique event URL */}
@@ -84,14 +110,23 @@ export const EventQrShareCard: React.FC<EventQrShareCardProps> = ({ event, compa
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={handleDownloadPng}
               className="w-full py-2 px-2.5 rounded-xl bg-[#FACC15] hover:bg-yellow-400 active:scale-95 text-black font-black text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer shadow"
             >
               {downloaded ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : <Download className="w-3.5 h-3.5 stroke-[2.5]" />}
-              <span>{downloaded ? 'PNG Downloaded!' : 'Download QR Code - PNG'}</span>
+              <span>{downloaded ? 'QR Downloaded!' : 'Download QR Code'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleShareQr}
+              className="w-full py-2 px-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:scale-95 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer border border-emerald-500/40"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Share QR</span>
             </button>
 
             <button
@@ -100,7 +135,7 @@ export const EventQrShareCard: React.FC<EventQrShareCardProps> = ({ event, compa
               className="w-full py-2 px-2.5 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95 text-white font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer border border-white/15"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[3]" /> : <Copy className="w-3.5 h-3.5 text-[#FACC15]" />}
-              <span>{copied ? 'Link Copied!' : 'Copy Event Link'}</span>
+              <span>{copied ? 'Link Copied!' : 'Copy Link'}</span>
             </button>
           </div>
         </div>

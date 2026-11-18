@@ -3,6 +3,41 @@ import { EventItem } from '../types';
 const DEFAULT_PUBLIC_WEB_URL =
   'https://ais-pre-qg6ueutevpurrokkvgbhp2-930625502633.europe-west2.run.app';
 
+const BASE_URL_STORAGE_KEY = 'ub_app_base_url';
+
+let configuredBaseUrl = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return (window.localStorage.getItem(BASE_URL_STORAGE_KEY) || '').trim().replace(/\/+$/, '');
+    }
+  } catch {}
+  return '';
+})();
+
+export function normalizeBaseUrl(raw: string): string {
+  const trimmed = (raw || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+export function setConfiguredBaseUrl(url: string): void {
+  configuredBaseUrl = normalizeBaseUrl(url);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (configuredBaseUrl) {
+        window.localStorage.setItem(BASE_URL_STORAGE_KEY, configuredBaseUrl);
+      } else {
+        window.localStorage.removeItem(BASE_URL_STORAGE_KEY);
+      }
+    }
+  } catch {}
+}
+
+export function getConfiguredBaseUrl(): string {
+  return configuredBaseUrl;
+}
+
 export function slugifyEventTitle(title: string): string {
   const normalized = (title || '')
     .normalize('NFKD')
@@ -20,10 +55,14 @@ export function getShortEventSuffix(eventId: string): string {
 }
 
 /**
- * Resolves the public HTTPS website URL so QR codes ALWAYS open the web app in a browser,
- * even when an organiser generates or copies the QR code from inside a native Capacitor APK.
+ * Resolves the public HTTPS website URL so QR codes ALWAYS open via the configured
+ * custom domain (app_settings/config.baseUrl) first, falling back to the Google AI Studio URL.
  */
 export function getPublicWebOrigin(): string {
+  if (configuredBaseUrl) {
+    return configuredBaseUrl;
+  }
+
   const envUrl =
     typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PUBLIC_APP_URL
       ? String((import.meta as any).env.VITE_PUBLIC_APP_URL).replace(/\/+$/, '')
@@ -278,11 +317,92 @@ export function downloadEventQrPng(
   ctx.fillText(shortUrl, width / 2, height - 42);
 
   const dataUrl = out.toDataURL('image/png');
-  const link = document.createElement('a');
-  link.href = dataUrl;
-  link.download = `${slug}-qr-universal-band-mall.png`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  const filename = `event-${slug}-QR.png`;
+
+  try {
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = filename;
+    link.rel = 'noopener noreferrer';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      try {
+        document.body.removeChild(link);
+      } catch {}
+    }, 250);
+  } catch {
+    // Fallback below if direct download is blocked
+  }
+
+  // On iOS Safari / restricted mobile WebViews where <a download> is ignored,
+  // also open the PNG image in a new tab so the organiser can long-press > Save Image.
+  try {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+    const isIOS = /iPad|iPhone|iPod/i.test(ua);
+    if (isIOS) {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(a);
+        } catch {}
+      }, 250);
+    }
+  } catch {}
+
   return true;
 }
+
+/**
+ * Shares the event QR PNG image (or link fallback) via navigator.share for WhatsApp / Facebook.
+ */
+export async function shareEventQrPng(
+  qrCanvas: HTMLCanvasElement | null,
+  event: EventItem,
+  eventUrl: string,
+  allEvents: EventItem[] = []
+): Promise<{ shared: boolean; fallbackCopied?: boolean; error?: string }> {
+  const slug = resolveEventSlug(event, allEvents);
+  const filename = `event-${slug}-QR.png`;
+  const shareTitle = `${event.title || 'Event'} — Universal Band Mall`;
+  const shareText = `Scan QR or tap the link to buy tickets for ${event.title || 'this event'}: ${eventUrl}`;
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      if (qrCanvas) {
+        const dataUrl = qrCanvas.toDataURL('image/png');
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        const file = new File([blob], filename, { type: 'image/png' });
+        if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: shareTitle,
+            text: shareText,
+            files: [file],
+          });
+          return { shared: true };
+        }
+      }
+      await navigator.share({
+        title: shareTitle,
+        text: shareText,
+        url: eventUrl,
+      });
+      return { shared: true };
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        return { shared: false };
+      }
+    }
+  }
+
+  const copied = await copyTextToClipboard(eventUrl);
+  return { shared: false, fallbackCopied: copied };
+}
+

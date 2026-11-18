@@ -30,6 +30,7 @@ import {
   ShieldCheck,
   Building2,
   Plus,
+  Globe,
 } from 'lucide-react';
 
 export const AdminPayshapSettingsPage: React.FC = () => {
@@ -40,6 +41,8 @@ export const AdminPayshapSettingsPage: React.FC = () => {
     updateTymebankPayshapNumber,
     supportedBanks,
     updateSupportedBanks,
+    appBaseUrl,
+    updateAppBaseUrl,
     newOrderSound,
     updateNewOrderSound,
     supportRingEnabled,
@@ -78,6 +81,9 @@ export const AdminPayshapSettingsPage: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [newBankInput, setNewBankInput] = useState<string>('');
   const [bankSavedMsg, setBankSavedMsg] = useState<string | null>(null);
+  const [baseUrlInput, setBaseUrlInput] = useState<string>(appBaseUrl || '');
+  const [baseUrlSavedMsg, setBaseUrlSavedMsg] = useState<string | null>(null);
+  const [isSavingBaseUrl, setIsSavingBaseUrl] = useState<boolean>(false);
 
   // New Order Sound state
   const [draftSound, setDraftSound] = useState<NewOrderSoundConfig>(newOrderSound);
@@ -86,6 +92,10 @@ export const AdminPayshapSettingsPage: React.FC = () => {
   const [soundErrorMsg, setSoundErrorMsg] = useState<string | null>(null);
   const [notifStatus, setNotifStatus] = useState<string>('default');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setBaseUrlInput(appBaseUrl || '');
+  }, [appBaseUrl]);
 
   useEffect(() => {
     void checkNotificationsPermissionGranted().then((granted) => {
@@ -240,12 +250,71 @@ export const AdminPayshapSettingsPage: React.FC = () => {
 
       <div>
         <h1 className="text-2xl font-extrabold text-white tracking-tight">
-          Admin &amp; PayShap Settings
+          Admin &amp; App Settings
         </h1>
         <p className="text-xs text-gray-400 mt-1">
-          Configure your TymeBank PayShap ID and custom New Order ringtone alert.
+          Configure your QR Domain / Base URL, TymeBank PayShap ID, supported banks, and New Order ringtone alert.
         </p>
       </div>
+
+      {/* Domain / Base URL for QR Codes */}
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setIsSavingBaseUrl(true);
+          setBaseUrlSavedMsg(null);
+          try {
+            await updateAppBaseUrl(baseUrlInput);
+            setBaseUrlSavedMsg(
+              baseUrlInput.trim()
+                ? 'Domain / Base URL saved! All QR codes now start with your domain.'
+                : 'Cleared — QR codes will use the default Google AI Studio link.'
+            );
+            setTimeout(() => setBaseUrlSavedMsg(null), 4000);
+          } finally {
+            setIsSavingBaseUrl(false);
+          }
+        }}
+        className="bg-[#1A1A1A] border border-[#FACC15]/30 rounded-2xl p-4 space-y-3"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-[#FACC15]" />
+            <span className="text-xs font-extrabold uppercase tracking-wider text-[#FACC15]">
+              Domain / Base URL
+            </span>
+          </div>
+          <span className="text-[10px] font-mono text-gray-400">app_settings/config</span>
+        </div>
+
+        <p className="text-[11px] text-gray-400 leading-snug">
+          Paste your bought domain (e.g. <span className="font-mono text-white">https://www.my-domain.co.za</span>). All event and organiser QR codes will use <span className="font-mono text-[#FACC15]">{'{baseUrl}/event/{eventId}'}</span>. Leave empty to fall back to the default link.
+        </p>
+
+        <input
+          type="text"
+          value={baseUrlInput}
+          onChange={(e) => setBaseUrlInput(e.target.value)}
+          placeholder="https://www.my-domain.co.za"
+          className="w-full min-h-[44px] bg-[#121212] border border-white/15 focus:border-[#FACC15] rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none"
+        />
+
+        {baseUrlSavedMsg && (
+          <div className="p-2.5 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-emerald-200 text-xs font-semibold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{baseUrlSavedMsg}</span>
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={isSavingBaseUrl}
+          className="w-full min-h-[44px] bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.98] text-black font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition disabled:opacity-50"
+        >
+          <Save className="w-4 h-4 stroke-[2.5]" />
+          <span>{isSavingBaseUrl ? 'Saving...' : 'Save Domain / Base URL'}</span>
+        </button>
+      </form>
 
       {/* Current Active PayShap ID */}
       <div className="bg-[#1A1A1A] border border-[#FACC15]/30 rounded-2xl p-4">

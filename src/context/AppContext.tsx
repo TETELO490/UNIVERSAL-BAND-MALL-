@@ -48,6 +48,9 @@ import {
   getPublicWebOrigin,
   findEventBySlugOrId,
   getEventRoutePath,
+  getConfiguredBaseUrl,
+  setConfiguredBaseUrl,
+  normalizeBaseUrl,
 } from '../utils/eventLinkHelper';
 import {
   DEFAULT_NEW_ORDER_SOUND,
@@ -295,6 +298,8 @@ interface AppContextType {
   updateTicketSelectedBank: (ticketId: string, bankName: string) => Promise<boolean>;
   supportedBanks: string[];
   updateSupportedBanks: (banks: string[]) => Promise<void>;
+  appBaseUrl: string;
+  updateAppBaseUrl: (url: string) => Promise<void>;
   processTymebankSms: (
     smsText: string,
     sender?: string
@@ -1167,6 +1172,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Could not persist supportedBanks to Firestore:', e);
     }
   };
+
+  const [appBaseUrl, setAppBaseUrl] = useState<string>(() => getConfiguredBaseUrl());
+
+  const updateAppBaseUrl = async (url: string) => {
+    const normalized = normalizeBaseUrl(url);
+    setAppBaseUrl(normalized);
+    setConfiguredBaseUrl(normalized);
+    try {
+      await setDoc(
+        doc(db, 'app_settings', 'config'),
+        {
+          baseUrl: normalized,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('Could not persist app_settings/config baseUrl to Firestore:', e);
+    }
+  };
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    try {
+      unsub = onSnapshot(
+        doc(db, 'app_settings', 'config'),
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            const remoteBase = typeof data?.baseUrl === 'string' ? normalizeBaseUrl(data.baseUrl) : '';
+            setAppBaseUrl(remoteBase);
+            setConfiguredBaseUrl(remoteBase);
+          }
+        },
+        () => {}
+      );
+    } catch {}
+    return () => {
+      if (unsub) unsub();
+    };
+  }, []);
 
   const updateTymebankPayshapNumber = async (num: string) => {
     const clean = num.trim();
@@ -8833,6 +8879,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateTicketSelectedBank,
         supportedBanks,
         updateSupportedBanks,
+        appBaseUrl,
+        updateAppBaseUrl,
         processTymebankSms,
         scanRealSmsInbox,
         tymebankPayshapNumber,
