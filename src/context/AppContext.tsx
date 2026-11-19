@@ -288,6 +288,17 @@ interface AppContextType {
     }
   ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
   adminApproveTicketPayment: (ticketId: string) => Promise<{ success: boolean; error?: string }>;
+  adminDeleteTicket: (ticketId: string) => Promise<{ success: boolean; error?: string }>;
+  adminIssueBackupTicket: (
+    event: EventItem,
+    details: {
+      fullName: string;
+      phone: string;
+      quantity?: number;
+      ticketTier?: string;
+      tierPrice?: string;
+    }
+  ) => Promise<{ success: boolean; ticket?: Ticket; error?: string }>;
   updateTicketPaymentStatus: (
     ticketId: string,
     status: 'PAID' | 'VERIFIED',
@@ -4023,6 +4034,182 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return { success: true };
+  };
+
+  const adminDeleteTicket = async (
+    ticketId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isUserVerifiedAdminSession(currentUserRef.current)) {
+      return { success: false, error: 'Unauthorized: Only an admin can delete tickets.' };
+    }
+
+    const targetTicket = ticketsRef.current.find(
+      (t) => t.id === ticketId || t.ticketId === ticketId
+    );
+    if (!targetTicket) {
+      return { success: false, error: 'Ticket not found' };
+    }
+
+    const docIdsToDelete = Array.from(
+      new Set([targetTicket.id, targetTicket.ticketId, ticketId].filter(Boolean))
+    );
+
+    const nextTickets = ticketsRef.current.filter(
+      (t) => !docIdsToDelete.includes(t.id) && !docIdsToDelete.includes(t.ticketId)
+    );
+    setTickets(nextTickets);
+
+    try {
+      localStorage.setItem('ub_local_tickets', JSON.stringify(nextTickets));
+    } catch {}
+
+    for (const dId of docIdsToDelete) {
+      try {
+        await deleteDoc(doc(db, 'tickets', dId));
+      } catch (e) {
+        console.warn('Could not delete ticket doc from Firestore:', dId, e);
+      }
+    }
+
+    if (targetTicket.eventId) {
+      const targetEventId = targetTicket.eventId;
+      const newPaidSoldCount = nextTickets
+        .filter((t) => t.eventId === targetEventId && isTicketPaid(t))
+        .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+
+      setEvents((prev) => {
+        const nextEvents = prev.map((ev) =>
+          ev.id === targetEventId ? { ...ev, ticketsSold: newPaidSoldCount } : ev
+        );
+        try {
+          localStorage.setItem('ub_local_events', JSON.stringify(nextEvents));
+        } catch {}
+        return nextEvents;
+      });
+
+      updateDoc(doc(db, 'events', targetEventId), {
+        ticketsSold: newPaidSoldCount,
+      }).catch(() => {});
+    }
+
+    if (selectedTicket && docIdsToDelete.includes(selectedTicket.id)) {
+      setSelectedTicket(null);
+    }
+
+    return { success: true };
+  };
+
+  const adminIssueBackupTicket = async (
+    event: EventItem,
+    details: {
+      fullName: string;
+      phone: string;
+      quantity?: number;
+      ticketTier?: string;
+      tierPrice?: string;
+    }
+  ): Promise<{ success: boolean; ticket?: Ticket; error?: string }> => {
+    if (!isUserVerifiedAdminSession(currentUserRef.current)) {
+      return { success: false, error: 'Unauthorized: Only an admin can issue backup tickets.' };
+    }
+
+    const liveEvent = events.find((e) => e.id === event.id) || event;
+    const qty = Math.max(1, Number(details.quantity || 1));
+    const unitPriceNum = parsePriceNumber(details.tierPrice || liveEvent.price);
+    const totalPriceNum = Math.round(unitPriceNum * qty * 100) / 100;
+    const formattedTotalPrice = `R${totalPriceNum % 1 === 0 ? totalPriceNum.toFixed(0) : totalPriceNum.toFixed(2)}`;
+    const custName = details.fullName.trim() || 'Attendee';
+    const custPhone = details.phone.trim();
+    const resolvedTier = details.ticketTier || 'General';
+    const hostStore = liveEvent.storeId ? stores.find((s) => s.id === liveEvent.storeId) : undefined;
+    const nowIso = new Date().toISOString();
+    const issuedByName = currentUser.fullName || currentUser.email || 'Admin';
+
+    // Link to recipient's registered account if their phone matches
+    const cleanTargetDigits = custPhone.replace(/\D/g, '').slice(-9);
+    const matchedUser = allRegisteredUsers.find((u) => {
+      const uDigits = (u.phone || '').replace(/\D/g, '').slice(-9);
+      return cleanTargetDigits.length >= 9 && uDigits === cleanTargetDigits;
+    });
+
+    const targetUserId = matchedUser?.id || `backup_${Date.now()}`;
+    const targetQrId = matchedUser
+      ? resolveCustomerQrId(matchedUser.id, matchedUser.customerQrId)
+      : undefined;
+
+    const randomFiveDigits = Math.floor(10000 + Math.random() * 90000);
+    const uniqueTicketCode = `UB-${randomFiveDigits}`;
+
+    const newTicket: Ticket = {
+      id: uniqueTicketCode,
+      ticketId: uniqueTicketCode,
+      eventId: liveEvent.id,
+      storeId: hostStore ? hostStore.id : (liveEvent.storeId || ''),
+      storeName: hostStore ? hostStore.name : (liveEvent.storeName || 'Event Venue'),
+      userId: targetUserId,
+      user_id: targetUserId,
+      customerQrId: targetQrId,
+      eventName: liveEvent.title,
+      eventTitle: liveEvent.title,
+      eventDate: liveEvent.date,
+      event_date: liveEvent.event_date || liveEvent.date,
+      eventLocation: liveEvent.location || hostStore?.location || 'South Africa',
+      price: formattedTotalPrice,
+      quantity: qty,
+      ticketTier: resolvedTier,
+      tierName: resolvedTier,
+      attendeeName: custName,
+      attendeePhone: custPhone,
+      customerName: custName,
+      customerPhone: custPhone,
+      qrCode: targetQrId || uniqueTicketCode,
+      bandCode: uniqueTicketCode,
+      status: 'valid',
+      attendanceStatus: 'OUTSIDE',
+      attendanceLogs: [],
+      purchaseDate: nowIso,
+      purchase_date: nowIso,
+      createdAt: nowIso,
+      paidAt: nowIso,
+      approvedAt: nowIso,
+      approvedBy: `ADMIN BACKUP (${issuedByName})`,
+      paymentStatus: 'PAID',
+      paymentMethod: 'Admin Backup',
+      selectedBank: 'Admin Backup',
+      payshapReference: `ADMIN-BACKUP-${uniqueTicketCode}`,
+    };
+
+    const nextTickets = [newTicket, ...ticketsRef.current];
+    setTickets(nextTickets);
+    try {
+      localStorage.setItem('ub_local_tickets', JSON.stringify(nextTickets));
+    } catch {}
+
+    try {
+      await setDoc(doc(db, 'tickets', newTicket.id), cleanForFirestore(newTicket));
+    } catch (e) {
+      console.warn('Could not save admin backup ticket to Firestore:', e);
+    }
+
+    const newPaidSoldCount = nextTickets
+      .filter((t) => t.eventId === liveEvent.id && isTicketPaid(t))
+      .reduce((sum, t) => sum + getTicketQuantity(t), 0);
+
+    setEvents((prev) => {
+      const nextEvents = prev.map((ev) =>
+        ev.id === liveEvent.id ? { ...ev, ticketsSold: newPaidSoldCount } : ev
+      );
+      try {
+        localStorage.setItem('ub_local_events', JSON.stringify(nextEvents));
+      } catch {}
+      return nextEvents;
+    });
+
+    updateDoc(doc(db, 'events', liveEvent.id), {
+      ticketsSold: newPaidSoldCount,
+    }).catch(() => {});
+
+    return { success: true, ticket: newTicket };
   };
 
   const confirmMallOrderPaymentManually = async (orderId: string): Promise<boolean> => {
@@ -8910,6 +9097,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         buyTicket,
         buyTicketWithPayShap,
         adminApproveTicketPayment,
+        adminDeleteTicket,
+        adminIssueBackupTicket,
         updateTicketPaymentStatus,
         confirmTicketPaymentManually,
         confirmMallOrderPaymentManually,

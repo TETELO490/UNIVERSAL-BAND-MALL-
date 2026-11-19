@@ -289,8 +289,23 @@ export const BuyTicketModal: React.FC = () => {
             <CheckCircle2 className="w-8 h-8" />
           </div>
           <div className="space-y-1.5">
-            <div className="text-3xl font-black tracking-tight text-[#FACC15]">
-              {snapScanResult.orderNumber}
+            <div className="flex items-center justify-center gap-2">
+              <div className="text-3xl font-black tracking-tight text-[#FACC15]">
+                {snapScanResult.orderNumber}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(snapScanResult.orderNumber);
+                  setCopiedRef(true);
+                  setTimeout(() => setCopiedRef(false), 2000);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-[10px] font-bold text-white flex items-center gap-1 cursor-pointer"
+                title="Copy Order Number"
+              >
+                {copiedRef ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-[#FACC15]" />}
+                <span>{copiedRef ? 'Copied' : 'Copy'}</span>
+              </button>
             </div>
             <h2 className="text-lg font-black text-white">
               Payment is under review
@@ -332,6 +347,17 @@ export const BuyTicketModal: React.FC = () => {
             >
               <span>PAY AGAIN / Retry Payment • R{snapScanResult.totalRands.toFixed(2)}</span>
             </button>
+            <p className="text-[11px] text-gray-300 leading-snug px-1">
+              You do NOT need to install SnapScan. You can pay with Card on the next page.
+            </p>
+            <a
+              href={snapScanResult.snapUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full min-h-[42px] bg-white/5 hover:bg-white/10 border border-[#FACC15]/40 text-[#FACC15] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
+            >
+              <span>Open Payment Page Again</span>
+            </a>
             <button
               type="button"
               onClick={() => {
@@ -632,6 +658,11 @@ export const BuyTicketModal: React.FC = () => {
                   : `Confirm & Pay R${totalCost.toFixed(2)} with Wallet`}
               </span>
             </button>
+            {paymentMode === 'snapscan' && (
+              <p className="text-[11px] text-center text-gray-300 mt-2 leading-snug">
+                You do NOT need to install SnapScan. You can pay with Card on the next page.
+              </p>
+            )}
           </div>
         </form>
 

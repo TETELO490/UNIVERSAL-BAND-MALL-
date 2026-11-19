@@ -415,8 +415,20 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
             <CheckCircle2 className="w-8 h-8" />
           </div>
           <div className="space-y-1.5">
-            <div className="text-3xl font-black tracking-tight text-[#0D47A1]">
-              {snapScanConfirmation.orderNumber}
+            <div className="flex items-center justify-center gap-2">
+              <div className="text-3xl font-black tracking-tight text-[#0D47A1]">
+                {snapScanConfirmation.orderNumber}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(snapScanConfirmation.orderNumber);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 text-[10px] font-bold text-[#0D47A1] cursor-pointer"
+                title="Copy Order Number"
+              >
+                Copy
+              </button>
             </div>
             <h2 className="text-lg font-black text-gray-900">
               Payment is under review
@@ -458,6 +470,17 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
             >
               <span>PAY AGAIN / Retry Payment • R{snapScanConfirmation.totalRands.toFixed(2)}</span>
             </button>
+            <p className="text-[11px] text-gray-600 leading-snug px-1">
+              You do NOT need to install SnapScan. You can pay with Card on the next page.
+            </p>
+            <a
+              href={snapScanConfirmation.snapUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full min-h-[42px] bg-blue-50 hover:bg-blue-100 border border-[#0D47A1]/40 text-[#0D47A1] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
+            >
+              <span>Open Payment Page Again</span>
+            </a>
             <button
               type="button"
               onClick={() => {

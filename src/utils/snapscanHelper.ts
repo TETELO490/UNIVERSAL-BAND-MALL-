@@ -81,7 +81,7 @@ export function buildSnapScanUrl(
   const cleanCode = snapCode.trim();
   const safeRands = Number.isFinite(amountInRands) && amountInRands > 0 ? amountInRands : 0;
   const amountInCents = Math.round(safeRands * 100);
-  return `https://pos.snapscan.io/qr/${encodeURIComponent(cleanCode)}?origin=snapstore&source=link&strict=true&amount=${amountInCents}&id=${encodeURIComponent(orderId)}`;
+  return `https://pos.snapscan.io/qr/${encodeURIComponent(cleanCode)}?id=${encodeURIComponent(orderId)}&amount=${amountInCents}&strict=true`;
 }
 
 /**

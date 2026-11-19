@@ -77,6 +77,7 @@ export const AdminConsoleModal: React.FC = () => {
     markChatAsReadByAdmin,
     approveTicketManuallyFromChat,
     adminApproveTicketPayment,
+    adminDeleteTicket,
     rejectTicketFromChat,
     purgeTestDataForGoLive,
   } = useApp();
@@ -410,6 +411,23 @@ export const AdminConsoleModal: React.FC = () => {
             </div>
             <span className="text-[9px] font-black text-white group-hover:text-[#FACC15] block truncate w-full">
               PayShap ID
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveModal(null);
+              navigateTo('/admin/give-ticket');
+            }}
+            className="p-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-center transition cursor-pointer flex flex-col items-center justify-center gap-0.5 group"
+            title="Give Backup Ticket (Any Event / Tier)"
+          >
+            <div className="w-6 h-6 rounded-lg bg-emerald-500 text-black flex items-center justify-center shrink-0">
+              <Send className="w-3.5 h-3.5 stroke-[2.5]" />
+            </div>
+            <span className="text-[9px] font-black text-white group-hover:text-emerald-400 block truncate w-full">
+              Give Ticket
             </span>
           </button>
 
@@ -2030,6 +2048,25 @@ export const AdminConsoleModal: React.FC = () => {
                           </button>
                         </div>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const targetId = t.id || t.ticketId;
+                          const res = await adminDeleteTicket(targetId);
+                          if (res.success) {
+                            setActionMsg(`Deleted ticket #${t.bandCode || targetId}`);
+                            setTimeout(() => setActionMsg(null), 4000);
+                          } else if (res.error) {
+                            setActionMsg(res.error);
+                            setTimeout(() => setActionMsg(null), 4000);
+                          }
+                        }}
+                        className="w-full min-h-[38px] bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 font-black text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Ticket {waiting ? '' : '(Paid)'}</span>
+                      </button>
                     </div>
                   );
                 })

@@ -15,6 +15,7 @@ import {
   Utensils,
   Clock,
   Zap,
+  Trash2,
 } from 'lucide-react';
 import { maskPhoneNumber, formatPhoneForViewer } from '../../utils/attendanceService';
 import { getEventPayshapReference, isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
@@ -42,6 +43,7 @@ export const TicketDetailModal: React.FC = () => {
     updateTicketSelectedBank,
     navigateTo,
     adminApproveTicketPayment,
+    adminDeleteTicket,
   } = useApp();
   const [copied, setCopied] = useState<boolean>(false);
   const [copiedRef, setCopiedRef] = useState<boolean>(false);
@@ -50,6 +52,8 @@ export const TicketDetailModal: React.FC = () => {
   const [nfcWriteStatus, setNfcWriteStatus] = useState<string>('');
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [approvingTicket, setApprovingTicket] = useState<boolean>(false);
+  const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
+  const [deletingTicket, setDeletingTicket] = useState<boolean>(false);
 
   if (!rawSelectedTicket) return null;
 
@@ -614,6 +618,59 @@ export const TicketDetailModal: React.FC = () => {
         {offlineNotice && (
           <div className="mt-3 p-2.5 rounded-xl bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium">
             {offlineNotice}
+          </div>
+        )}
+
+        {isVerifiedAdmin && (
+          <div className="mt-3">
+            {!confirmingDelete ? (
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(true)}
+                className="w-full min-h-[42px] bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 font-black text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Delete Ticket (Admin)</span>
+              </button>
+            ) : (
+              <div className="p-3 rounded-xl bg-red-950/60 border border-red-500/50 space-y-2">
+                <p className="text-[11px] font-bold text-red-200 text-center">
+                  Permanently delete this ticket{isPaidPass ? ' (even though it is PAID)' : ''}?
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={deletingTicket}
+                    onClick={() => setConfirmingDelete(false)}
+                    className="min-h-[38px] bg-white/10 hover:bg-white/15 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingTicket}
+                    onClick={async () => {
+                      setDeletingTicket(true);
+                      try {
+                        const res = await adminDeleteTicket(selectedTicket.id || selectedTicket.ticketId);
+                        if (res.success) {
+                          setSelectedTicket(null);
+                          setActiveModal(null);
+                        } else if (res.error) {
+                          setOfflineNotice(res.error);
+                        }
+                      } finally {
+                        setDeletingTicket(false);
+                        setConfirmingDelete(false);
+                      }
+                    }}
+                    className="min-h-[38px] bg-red-600 hover:bg-red-500 text-white font-black text-xs rounded-lg transition cursor-pointer disabled:opacity-50"
+                  >
+                    {deletingTicket ? 'Deleting...' : 'Confirm Delete'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

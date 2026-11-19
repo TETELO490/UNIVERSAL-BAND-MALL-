@@ -273,6 +273,13 @@ export const ProfilePage: React.FC = () => {
             action: () => navigateTo('/admin/snapscan-settings'),
           },
           {
+            id: 'admin-give-ticket',
+            title: 'Give Backup Ticket (Any Event / Tier)',
+            icon: Shield,
+            iconColor: 'text-emerald-400',
+            action: () => navigateTo('/admin/give-ticket'),
+          },
+          {
             id: 'admin-buy-ticket-alarm',
             title: 'Buy Ticket Alarm Song (Admin Only)',
             icon: Volume2,
