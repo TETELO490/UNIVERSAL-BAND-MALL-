@@ -4,6 +4,8 @@ import { doc, setDoc } from 'firebase/firestore';
 
 import { isTicketPaid } from './ticketStatus';
 
+import { isAuthorizedAdminEmail } from './cryptoHelper';
+
 /**
  * Normalizes phone number into clean digits (e.g., "+27 82 123 4567" -> "0821234567" or "27821234567")
  */
@@ -13,7 +15,7 @@ export const normalizePhone = (phone: string): string => {
 };
 
 /**
- * Masks phone number for bouncer privacy display: e.g. "082 *** 4567"
+ * Masks phone number for privacy display: e.g. "082 *** 4567"
  */
 export const maskPhoneNumber = (phone: string): string => {
   if (!phone) return '082 *** 0000';
@@ -24,6 +26,34 @@ export const maskPhoneNumber = (phone: string): string => {
     return `${prefix} *** ${suffix}`;
   }
   return clean.replace(/\d(?=\d{2})/g, '*');
+};
+
+/**
+ * Formats phone number based on viewer role.
+ * Admins see the full uncovered phone number in their account.
+ * For any other role, the phone number is covered/masked for privacy.
+ */
+export const formatPhoneForViewer = (
+  phone: string | undefined | null,
+  viewer?: { role?: string; email?: string } | null,
+  forceIsAdmin?: boolean
+): string => {
+  if (!phone) return 'Not provided';
+  const clean = phone.trim();
+  if (!clean) return 'Not provided';
+
+  const roleLower = (viewer?.role || '').toLowerCase();
+  const isAdmin = Boolean(
+    forceIsAdmin ||
+    roleLower === 'admin' ||
+    (viewer?.email && isAuthorizedAdminEmail(viewer.email)) ||
+    (typeof window !== 'undefined' && localStorage.getItem('ub_admin_session') === 'true')
+  );
+
+  if (isAdmin) {
+    return clean;
+  }
+  return maskPhoneNumber(clean);
 };
 
 /**

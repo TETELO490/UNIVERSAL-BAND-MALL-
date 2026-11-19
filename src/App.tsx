@@ -77,6 +77,8 @@ const AdminPayshapSettingsPage = lazyWithRetry(() => import('./pages/AdminPaysha
 const AdminLivePaymentsPage = lazyWithRetry(() => import('./pages/AdminLivePaymentsPage').then(m => ({ default: m.AdminLivePaymentsPage })));
 const AdminBuyTicketAlarmPage = lazyWithRetry(() => import('./pages/AdminBuyTicketAlarmPage').then(m => ({ default: m.AdminBuyTicketAlarmPage })));
 const PayshapTopUpPage = lazyWithRetry(() => import('./pages/PayshapTopUpPage').then(m => ({ default: m.PayshapTopUpPage })));
+const SnapScanOrdersPage = lazyWithRetry(() => import('./pages/SnapScanOrdersPage').then(m => ({ default: m.SnapScanOrdersPage })));
+const AdminSnapScanSettingsPage = lazyWithRetry(() => import('./pages/AdminSnapScanSettingsPage').then(m => ({ default: m.AdminSnapScanSettingsPage })));
 
 // Lazy load modals on demand
 const WalletModal = lazyWithRetry(() => import('./components/modals/WalletModal').then(m => ({ default: m.WalletModal })));
@@ -248,7 +250,8 @@ const AppContent: React.FC = () => {
       currentRoute === '/app-icon' ||
       currentRoute === '/icon-settings' ||
       currentRoute === '/change-icon' ||
-      currentRoute === '/api-settings';
+      currentRoute === '/api-settings' ||
+      currentRoute === '/admin-settings';
 
     if (isAdminSettingsDeepLink && !isAdmin) {
       return (
@@ -302,6 +305,18 @@ const AppContent: React.FC = () => {
     ) {
       return isAdmin ? (
         <AdminPayshapSettingsPage />
+      ) : (
+        <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
+          Admin only
+        </div>
+      );
+    }
+    if (
+      currentRoute === '/admin/snapscan-settings' ||
+      currentRoute === '/admin-settings'
+    ) {
+      return isAdmin ? (
+        <AdminSnapScanSettingsPage />
       ) : (
         <div className="p-8 text-center text-red-500 font-bold max-w-md mx-auto my-12 bg-red-500/10 border border-red-500/30 rounded-2xl">
           Admin only
@@ -393,6 +408,9 @@ const AppContent: React.FC = () => {
     }
     if (currentRoute === '/food-drinks' || currentRoute === '/orders' || currentRoute === '/cart') {
       return <FoodDrinksPage />;
+    }
+    if (currentRoute === '/snapscan-orders') {
+      return <SnapScanOrdersPage />;
     }
     if (currentRoute === '/verify-id') {
       return <VerifyIdPage />;

@@ -23,6 +23,13 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { pickRealContact } from '../../utils/nativePermissions';
+import {
+  buildSnapScanUrl,
+  getPublicSnapCode,
+  openSnapScanLink,
+  recordSnapScanOrder,
+  recordSnapScanRetryAttempt,
+} from '../../utils/snapscanHelper';
 
 export const BuyTicketModal: React.FC = () => {
   const {
@@ -39,8 +46,16 @@ export const BuyTicketModal: React.FC = () => {
     setActiveModal,
   } = useApp();
 
-  const [paymentMode, setPaymentMode] = useState<'payshap' | 'wallet'>('payshap');
+  const [paymentMode, setPaymentMode] = useState<'payshap' | 'snapscan' | 'wallet'>('payshap');
   const [selectedBank, setSelectedBank] = useState<string>('');
+  const [snapScanResult, setSnapScanResult] = useState<{
+    orderDocId: string;
+    orderNumber: string;
+    totalRands: number;
+    pressedPayLabel: string;
+    attempts: string[];
+    snapUrl: string;
+  } | null>(null);
   const [fullName, setFullName] = useState<string>(currentUser.fullName || currentUser.name || '');
   const [phone, setPhone] = useState<string>(currentUser.phone || '');
   const [quantity, setQuantity] = useState<number>(1);
@@ -205,6 +220,45 @@ export const BuyTicketModal: React.FC = () => {
       } else if (res.error) {
         setError(res.error);
       }
+    } else if (paymentMode === 'snapscan') {
+      // SnapScan Payment flow with Order Number + exact Pressed PAY at HH:MM
+      const snapRecord = await recordSnapScanOrder({
+        totalRands: totalCost,
+        storeId: liveEvent.storeId || '',
+        storeName: liveEvent.title,
+        customerName: fullName.trim(),
+        customerPhone: phone.trim(),
+      });
+
+      await buyTicketWithPayShap(liveEvent, {
+        fullName: fullName.trim(),
+        phone: phone.trim(),
+        quantity,
+        ticketTier: selectedTierObj.name,
+        tierPrice: selectedTierObj.formattedPrice,
+        payshapReference: `${snapRecord.orderNumber} (${snapRecord.pressedPayLabel})`,
+        selectedBank: 'SnapScan',
+      });
+
+      const snapCode = await getPublicSnapCode();
+      if (!snapCode) {
+        setLoading(false);
+        setError('SnapScan is not configured yet. Please ask the admin to save the SnapCode in Admin Settings.');
+        return;
+      }
+
+      const snapUrl = buildSnapScanUrl(totalCost, snapRecord.orderNumber, snapCode);
+      openSnapScanLink(snapUrl);
+
+      setLoading(false);
+      setSnapScanResult({
+        orderDocId: snapRecord.id,
+        orderNumber: snapRecord.orderNumber,
+        totalRands: totalCost,
+        pressedPayLabel: snapRecord.pressedPayLabel,
+        attempts: snapRecord.attempts || [snapRecord.pressedPayTime],
+        snapUrl,
+      });
     } else {
       // Regular wallet flow
       const res = await buyTicket(liveEvent, {
@@ -226,6 +280,73 @@ export const BuyTicketModal: React.FC = () => {
       }
     }
   };
+
+  if (snapScanResult) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-[#1A1A1A] rounded-2xl border border-[#FACC15]/40 p-6 shadow-2xl text-center space-y-4">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-[#FACC15]/15 border border-[#FACC15]/40 text-[#FACC15] flex items-center justify-center">
+            <CheckCircle2 className="w-8 h-8" />
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-3xl font-black tracking-tight text-[#FACC15]">
+              {snapScanResult.orderNumber}
+            </div>
+            <h2 className="text-lg font-black text-white">
+              Payment is under review
+            </h2>
+            <p className="text-xs font-bold text-gray-300">
+              Total: <strong className="text-white">R{snapScanResult.totalRands.toFixed(2)}</strong> •{' '}
+              <span className="text-amber-300">{snapScanResult.pressedPayLabel}</span>
+            </p>
+            {snapScanResult.attempts.length > 0 && (
+              <div className="pt-1 flex flex-wrap items-center justify-center gap-1.5">
+                {snapScanResult.attempts.map((t, i) => (
+                  <span
+                    key={`ticket-att-${i}`}
+                    className="text-[10px] font-mono font-bold text-[#FACC15] bg-[#FACC15]/10 border border-[#FACC15]/30 px-2 py-0.5 rounded-lg"
+                  >
+                    Attempt #{i + 1} · {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="space-y-2 pt-1">
+            <button
+              type="button"
+              onClick={async () => {
+                const hhmm = await recordSnapScanRetryAttempt(snapScanResult.orderDocId);
+                setSnapScanResult((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        pressedPayLabel: `Pressed PAY at ${hhmm}`,
+                        attempts: [...prev.attempts, hhmm],
+                      }
+                    : prev
+                );
+                openSnapScanLink(snapScanResult.snapUrl);
+              }}
+              className="w-full min-h-[46px] bg-[#FACC15] hover:bg-yellow-400 text-black font-black text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+            >
+              <span>PAY AGAIN / Retry Payment • R{snapScanResult.totalRands.toFixed(2)}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSnapScanResult(null);
+                setSelectedBuyingEvent(null);
+              }}
+              className="w-full min-h-[44px] bg-white/10 hover:bg-white/15 text-white font-bold text-xs rounded-xl transition cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
@@ -306,33 +427,58 @@ export const BuyTicketModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Payment Method Selector: PayShap vs Wallet */}
-        <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/60 rounded-xl border border-white/10 mb-3 text-xs">
+        {/* Payment Method Selector: PayShap vs SnapScan vs Wallet */}
+        <div className="grid grid-cols-3 gap-1 p-1 bg-black/60 rounded-xl border border-white/10 mb-3 text-[11px]">
           <button
             type="button"
             onClick={() => setPaymentMode('payshap')}
-            className={`py-2 px-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+            className={`py-2 px-1.5 rounded-lg font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
               paymentMode === 'payshap'
                 ? 'bg-[#FACC15] text-black font-black shadow-sm'
                 : 'text-gray-400 hover:text-white'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>PayShap Request</span>
+            <Smartphone className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">PayShap</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentMode('snapscan')}
+            className={`py-2 px-1.5 rounded-lg font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+              paymentMode === 'snapscan'
+                ? 'bg-[#FACC15] text-black font-black shadow-sm'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <CreditCard className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">SnapScan</span>
           </button>
           <button
             type="button"
             onClick={() => setPaymentMode('wallet')}
-            className={`py-2 px-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+            className={`py-2 px-1.5 rounded-lg font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
               paymentMode === 'wallet'
                 ? 'bg-[#FACC15] text-black font-black shadow-sm'
                 : 'text-gray-400 hover:text-white'
             }`}
           >
-            <Banknote className="w-3.5 h-3.5" />
-            <span>NFC Wallet</span>
+            <Banknote className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Wallet</span>
           </button>
         </div>
+
+        {/* SNAPSCAN PAYMENT BOX (When SnapScan is selected) */}
+        {paymentMode === 'snapscan' && (
+          <div className="bg-[#121212] border border-[#FACC15]/40 rounded-xl p-3 mb-4 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[#FACC15] font-black uppercase text-[10px]">Pay with SnapScan</span>
+              <span className="text-sm font-black text-white font-mono">R{totalCost.toFixed(2)}</span>
+            </div>
+            <p className="text-[10px] text-gray-300 leading-snug">
+              Tapping <strong className="text-[#FACC15]">Pay with SnapScan</strong> opens SnapScan with the locked amount of <strong className="text-white">R{totalCost.toFixed(2)}</strong> and records your Order Number &amp; exact time.
+            </p>
+          </div>
+        )}
 
         {/* PAYSHAP PAYMENT REQUEST BOX (When PayShap is selected) */}
         {paymentMode === 'payshap' && (
@@ -479,6 +625,8 @@ export const BuyTicketModal: React.FC = () => {
                   ? 'Creating Ticket...'
                   : paymentMode === 'payshap' && !selectedBank.trim()
                   ? 'Choose a Bank to Buy Ticket'
+                  : paymentMode === 'snapscan'
+                  ? `Pay with SnapScan • R${totalCost.toFixed(2)}`
                   : paymentMode === 'payshap'
                   ? `Buy Ticket • R${totalCost.toFixed(2)}`
                   : `Confirm & Pay R${totalCost.toFixed(2)} with Wallet`}

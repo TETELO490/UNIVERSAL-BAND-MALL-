@@ -26,7 +26,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { TicketQrScannerModal } from '../components/modals/TicketQrScannerModal';
-import { maskPhoneNumber, normalizePhone, formatMovementTime } from '../utils/attendanceService';
+import { maskPhoneNumber, formatPhoneForViewer, normalizePhone, formatMovementTime } from '../utils/attendanceService';
 import { isTicketPaid } from '../utils/ticketStatus';
 import { getTicketQuantity } from '../utils/eventTicketLimit';
 import {
@@ -631,7 +631,7 @@ export const CheckInPage: React.FC = () => {
                   Boolean((ticket as any).checkedInAt) ||
                   (Array.isArray(ticket.attendanceLogs) && ticket.attendanceLogs.length > 0);
                 const displayName = ticket.attendeeName || ticket.customerName || 'Attendee';
-                const phoneDisplay = maskPhoneNumber(ticket.attendeePhone || ticket.customerPhone || '');
+                const phoneDisplay = formatPhoneForViewer(ticket.attendeePhone || ticket.customerPhone, currentUser, isAdmin);
 
                 return (
                   <div

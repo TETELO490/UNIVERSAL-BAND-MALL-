@@ -2,12 +2,20 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { CartItem } from '../../types';
 import {
+  buildSnapScanUrl,
+  getPublicSnapCode,
+  openSnapScanLink,
+  recordSnapScanOrder,
+  recordSnapScanRetryAttempt,
+} from '../../utils/snapscanHelper';
+import {
   X,
   Trash2,
   Plus,
   Minus,
   ShoppingBag,
   CreditCard,
+  CheckCircle2,
   Phone,
   Calendar,
   AlertCircle,
@@ -93,7 +101,15 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
     return currentUser?.phone || localStorage.getItem('ub_checkout_phone') || '';
   });
   
-  const [paymentMethod, setPaymentMethod] = useState<'Capitec Pay' | 'Ozow' | 'PayShap' | 'Wallet'>('Capitec Pay');
+  const [paymentMethod, setPaymentMethod] = useState<'Capitec Pay' | 'Ozow' | 'PayShap' | 'SnapScan' | 'Wallet'>('Capitec Pay');
+  const [snapScanConfirmation, setSnapScanConfirmation] = useState<{
+    orderDocId: string;
+    orderNumber: string;
+    totalRands: number;
+    pressedPayLabel: string;
+    attempts: string[];
+    snapUrl: string;
+  } | null>(null);
   const [useWalletBalance, setUseWalletBalance] = useState<boolean>(true);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -350,6 +366,33 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
         return;
       }
 
+      if (paymentMethod === 'SnapScan') {
+        const snapCode = await getPublicSnapCode();
+        if (!snapCode) {
+          setErrorMessage('SnapScan is not configured yet. Please ask the admin to save the SnapCode in Admin Settings.');
+          return;
+        }
+        const payRands = externalAmount > 0 ? externalAmount : total;
+        const snapRecord = await recordSnapScanOrder({
+          totalRands: payRands,
+          storeId,
+          storeName,
+          customerName: customerName.trim() || currentUser?.name || 'Customer',
+          customerPhone: cleanPhone,
+        });
+        const snapUrl = buildSnapScanUrl(payRands, snapRecord.orderNumber, snapCode);
+        openSnapScanLink(snapUrl);
+        setSnapScanConfirmation({
+          orderDocId: snapRecord.id,
+          orderNumber: snapRecord.orderNumber,
+          totalRands: payRands,
+          pressedPayLabel: snapRecord.pressedPayLabel,
+          attempts: snapRecord.attempts || [snapRecord.pressedPayTime],
+          snapUrl,
+        });
+        return;
+      }
+
       onClose();
       if (onOrderCreated) {
         onOrderCreated(res.order);
@@ -363,6 +406,73 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
       setIsSubmitting(false);
     }
   };
+
+  if (snapScanConfirmation) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="w-full max-w-sm bg-white text-black rounded-3xl p-6 shadow-2xl text-center space-y-4 border-2 border-[#0D47A1]">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center">
+            <CheckCircle2 className="w-8 h-8" />
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-3xl font-black tracking-tight text-[#0D47A1]">
+              {snapScanConfirmation.orderNumber}
+            </div>
+            <h2 className="text-lg font-black text-gray-900">
+              Payment is under review
+            </h2>
+            <p className="text-xs font-bold text-gray-700">
+              Total: <strong className="text-gray-900">R{snapScanConfirmation.totalRands.toFixed(2)}</strong> •{' '}
+              <span className="text-amber-700">{snapScanConfirmation.pressedPayLabel}</span>
+            </p>
+            {snapScanConfirmation.attempts.length > 0 && (
+              <div className="pt-1 flex flex-wrap items-center justify-center gap-1.5">
+                {snapScanConfirmation.attempts.map((t, i) => (
+                  <span
+                    key={`cart-att-${i}`}
+                    className="text-[10px] font-mono font-bold text-[#0D47A1] bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-lg"
+                  >
+                    Attempt #{i + 1} · {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="space-y-2 pt-1">
+            <button
+              type="button"
+              onClick={async () => {
+                const hhmm = await recordSnapScanRetryAttempt(snapScanConfirmation.orderDocId);
+                setSnapScanConfirmation((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        pressedPayLabel: `Pressed PAY at ${hhmm}`,
+                        attempts: [...prev.attempts, hhmm],
+                      }
+                    : prev
+                );
+                openSnapScanLink(snapScanConfirmation.snapUrl);
+              }}
+              className="w-full min-h-[46px] bg-[#0D47A1] hover:bg-blue-900 text-white font-black text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+            >
+              <span>PAY AGAIN / Retry Payment • R{snapScanConfirmation.totalRands.toFixed(2)}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSnapScanConfirmation(null);
+                onClose();
+              }}
+              className="w-full min-h-[44px] bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl transition cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
@@ -1002,6 +1112,29 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
                       R{currentWalletBalance.toFixed(2)} available
                     </span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('SnapScan')}
+                    className={`col-span-2 p-2.5 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
+                      paymentMethod === 'SnapScan'
+                        ? 'bg-[#0D47A1] text-white border-[#0D47A1] shadow-md'
+                        : 'bg-white text-gray-800 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <div>
+                      <div className="text-[11px] font-black flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Pay with SnapScan</span>
+                      </div>
+                      <span className="text-[9px] opacity-80 block mt-0.5">
+                        Opens SnapScan app / browser with locked amount
+                      </span>
+                    </div>
+                    <span className="text-xs font-black font-mono">
+                      R{(externalAmount > 0 ? externalAmount : total).toFixed(2)}
+                    </span>
+                  </button>
                 </div>
 
                 {/* Split Payment Toggle when paying via Gateway and wallet balance > 0 */}
@@ -1143,6 +1276,8 @@ export const StoreCartDrawer: React.FC<StoreCartDrawerProps> = ({
                   ? `Pay R${total.toFixed(2)} (R${walletDeduction.toFixed(2)} Wallet + R${externalAmount.toFixed(2)} via ${paymentMethod})`
                   : paymentMethod === 'Wallet'
                   ? `Pay R${total.toFixed(2)} with Wallet`
+                  : paymentMethod === 'SnapScan'
+                  ? `Pay with SnapScan • R${total.toFixed(2)}`
                   : `Pay R${total.toFixed(2)} via ${paymentMethod}`}
               </span>
             </button>

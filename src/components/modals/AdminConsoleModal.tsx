@@ -1984,9 +1984,9 @@ export const AdminConsoleModal: React.FC = () => {
                       <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1 border-t border-white/5">
                         <span>
                           Phone:{' '}
-                          {waiting
-                            ? t.attendeePhone || t.customerPhone || 'Not provided'
-                            : maskPhoneNumber(t.attendeePhone || t.customerPhone || '')}
+                          <span className="text-white font-mono font-bold">
+                            {t.attendeePhone || t.customerPhone || 'Not provided'}
+                          </span>
                         </span>
                         <span className="truncate max-w-[150px]">{t.eventTitle}</span>
                       </div>
@@ -2096,7 +2096,7 @@ export const AdminConsoleModal: React.FC = () => {
                           {t.attendeeName || t.customerName}
                         </span>
                         <span className="text-[10px] text-yellow-400 font-mono font-bold">
-                          {maskPhoneNumber(t.attendeePhone || t.customerPhone || '')}
+                          {t.attendeePhone || t.customerPhone || 'Not provided'}
                         </span>
                       </div>
                       <span className="bg-[#FACC15] text-black font-extrabold text-[10px] px-2 py-0.5 rounded-md">

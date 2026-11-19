@@ -89,6 +89,35 @@ export const RegisterPage: React.FC = () => {
     setPhone(val);
   };
 
+  const cleanNameVal = fullName.trim();
+  const cleanEmailVal = email.trim().toLowerCase();
+  const cleanPhoneDigits = phone.replace(/\D/g, '');
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmailVal);
+
+  const isRoleFieldsComplete = (() => {
+    if (!selectedRole) return false;
+    if (selectedRole === 'Shop Worker') return Boolean(assignedStoreId.trim());
+    if (selectedRole === 'Seller') return shopName.trim().length >= 2 && Boolean(whatToSell);
+    if (selectedRole === 'Event Organiser') return organisationName.trim().length >= 2;
+    if (selectedRole === 'Driver') {
+      return (
+        Boolean(vehicleType) &&
+        licensePlate.trim().length >= 3 &&
+        driverLicenseNumber.trim().length >= 5
+      );
+    }
+    return true;
+  })();
+
+  const isFormComplete = Boolean(
+    cleanNameVal.length >= 2 &&
+    cleanPhoneDigits.length >= 9 &&
+    emailValid &&
+    password.length >= 6 &&
+    Boolean(selectedRole) &&
+    isRoleFieldsComplete
+  );
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -96,18 +125,19 @@ export const RegisterPage: React.FC = () => {
     const cleanName = fullName.trim();
     const cleanEmail = email.trim().toLowerCase();
     const cleanPhone = phone.trim();
+    const phoneDigits = cleanPhone.replace(/\D/g, '');
 
     if (!cleanName || cleanName.length < 2) {
-      setError('Please enter your Full Name.');
+      setError('Please enter your Full Name (at least 2 characters).');
+      return;
+    }
+    if (!cleanPhone || phoneDigits.length < 9) {
+      setError('Please enter a valid Phone Number (at least 9 digits).');
       return;
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
       setError('Please enter a valid Real Email Address.');
-      return;
-    }
-    if (!cleanPhone) {
-      setError('Please enter your Phone Number.');
       return;
     }
     if (!password || password.length < 6) {
@@ -123,23 +153,23 @@ export const RegisterPage: React.FC = () => {
 
     // Role-specific validations
     if (selectedRole === 'Shop Worker') {
-      if (!assignedStoreId) {
+      if (!assignedStoreId.trim()) {
         setError('Please select which Shop you work for.');
         return;
       }
     } else if (selectedRole === 'Seller') {
-      if (!shopName.trim()) {
-        setError('Please enter your Shop Name.');
+      if (shopName.trim().length < 2) {
+        setError('Please enter your Shop Name (at least 2 characters).');
         return;
       }
     } else if (selectedRole === 'Event Organiser') {
-      if (!organisationName.trim()) {
-        setError('Please enter your Organisation Name.');
+      if (organisationName.trim().length < 2) {
+        setError('Please enter your Organisation Name (at least 2 characters).');
         return;
       }
     } else if (selectedRole === 'Driver') {
-      if (!licensePlate.trim() || !driverLicenseNumber.trim()) {
-        setError('Please enter your License Plate and Driver\'s License Number.');
+      if (licensePlate.trim().length < 3 || driverLicenseNumber.trim().length < 5) {
+        setError('Please enter a valid Vehicle License Plate and Driver\'s License Number.');
         return;
       }
     }
@@ -789,13 +819,19 @@ export const RegisterPage: React.FC = () => {
           {/* Submit Button */}
           <button
             type="submit"
-            disabled={isSubmitting || isGoogleLoading}
-            className="w-full py-3.5 bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black font-black text-xs rounded-2xl shadow-xl transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 mt-4"
+            disabled={isSubmitting || isGoogleLoading || !isFormComplete}
+            className={`w-full py-3.5 font-black text-xs rounded-2xl shadow-xl transition flex items-center justify-center gap-2 mt-4 ${
+              !isFormComplete
+                ? 'bg-zinc-800 text-gray-500 border border-zinc-700 cursor-not-allowed opacity-60'
+                : 'bg-[#FACC15] hover:bg-yellow-400 active:scale-[0.99] text-black cursor-pointer disabled:opacity-50'
+            }`}
           >
             <span>
               {isSubmitting
                 ? 'Creating Account...'
-                : !selectedRole || selectedRole === 'Customer'
+                : !isFormComplete
+                ? 'Complete All Fields to Register'
+                : selectedRole === 'Customer'
                 ? 'Register & Start Shopping'
                 : 'Submit Application for Approval'}
             </span>

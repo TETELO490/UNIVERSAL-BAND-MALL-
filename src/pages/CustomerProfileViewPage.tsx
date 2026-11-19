@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { searchCustomerByIdOrPhone, VerifiedCustomerProfile } from '../utils/customerDirectory';
+import { maskPhoneNumber } from '../utils/attendanceService';
 import {
   isOrganizerOrVenueStaffRole,
   isUserVerifiedAdminSession,
@@ -148,7 +149,9 @@ export const CustomerProfileViewPage: React.FC = () => {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400 font-sans">Phone:</span>
-                <span className="text-white font-bold">{customer.phone}</span>
+                <span className="text-white font-bold">
+                  {isVerifiedAdmin || isSelf ? customer.phone : maskPhoneNumber(customer.phone || '')}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400 font-sans">Unique Account ID:</span>

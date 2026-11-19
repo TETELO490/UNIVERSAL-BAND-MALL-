@@ -16,7 +16,7 @@ import {
   Clock,
   Zap,
 } from 'lucide-react';
-import { maskPhoneNumber } from '../../utils/attendanceService';
+import { maskPhoneNumber, formatPhoneForViewer } from '../../utils/attendanceService';
 import { getEventPayshapReference, isTicketWaitingPayment, isTicketPaid } from '../../utils/ticketStatus';
 import {
   doesUserPersonallyOwnTicket,
@@ -247,7 +247,11 @@ export const TicketDetailModal: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-gray-400 text-[11px]">Primary Phone:</span>
                 <span className="font-mono font-bold text-[#FACC15]">
-                  {maskPhoneNumber(selectedTicket.attendeePhone || selectedTicket.customerPhone || '')}
+                  {formatPhoneForViewer(
+                    selectedTicket.attendeePhone || selectedTicket.customerPhone,
+                    currentUser,
+                    isVerifiedAdmin
+                  )}
                 </span>
               </div>
               <div className="flex items-center justify-between pt-1 border-t border-white/5">

@@ -60,6 +60,8 @@ import {
   triggerBackgroundNotification,
   startLoopingPaymentAlarm,
   stopLoopingPaymentAlarm,
+  startAdminBackgroundKeepAlive,
+  stopAdminBackgroundKeepAlive,
 } from '../utils/audio';
 import {
   isTicketWaitingPayment,
@@ -894,6 +896,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveBuyTicketAlarm(null);
   };
 
+  // Keep admin background audio session & WakeLock alive so ticket alerts ring even when phone sleeps
+  useEffect(() => {
+    const activateKeepAlive = () => {
+      if (isAdminSessionActive()) {
+        void startAdminBackgroundKeepAlive();
+      } else {
+        stopAdminBackgroundKeepAlive();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isAdminSessionActive()) {
+        void startAdminBackgroundKeepAlive();
+      }
+    };
+
+    window.addEventListener('pointerdown', activateKeepAlive, { passive: true });
+    window.addEventListener('touchstart', activateKeepAlive, { passive: true });
+    window.addEventListener('click', activateKeepAlive, { passive: true });
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.removeEventListener('pointerdown', activateKeepAlive);
+      window.removeEventListener('touchstart', activateKeepAlive);
+      window.removeEventListener('click', activateKeepAlive);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      stopAdminBackgroundKeepAlive();
+    };
+  }, []);
+
   const updateBuyTicketAlarm = async (config: BuyTicketAlarmConfig) => {
     const normalized: BuyTicketAlarmConfig = {
       ...DEFAULT_NEW_ORDER_SOUND,
@@ -1062,10 +1094,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (kind === 'paid') {
       if (adminActive) {
         const msg = `Payment Received - ${custName} - Ticket PAID ✅`;
-        triggerAdminBuyTicketAlarmIfEnabled(ticket);
-        if (!buyTicketAlarmRef.current?.enabled) {
-          playTicketPaidSuccessSound();
-        }
+        triggerAdminBuyTicketAlarmIfEnabled(ticket, true);
         void triggerBackgroundNotification('Ticket Payment Received', msg, `paid-admin-${ticket.id}`);
         setNotificationBanner({
           id: `paid_admin_${ticket.id}_${Date.now()}`,

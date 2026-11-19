@@ -15,7 +15,7 @@ import {
   PieChart,
   Utensils,
 } from 'lucide-react';
-import { maskPhoneNumber } from '../utils/attendanceService';
+import { maskPhoneNumber, formatPhoneForViewer } from '../utils/attendanceService';
 import { isEventExpired } from '../utils/dateHelper';
 import { isTicketWaitingPayment, isTicketPaid } from '../utils/ticketStatus';
 import {
@@ -318,7 +318,9 @@ export const TicketsPage: React.FC = () => {
                         {(ticket.attendeePhone || ticket.customerPhone) && (
                           <>
                             <span className="text-gray-500">•</span>
-                            <span className="font-mono text-gray-300">{maskPhoneNumber(ticket.attendeePhone || ticket.customerPhone || '')}</span>
+                            <span className="font-mono text-gray-300">
+                              {formatPhoneForViewer(ticket.attendeePhone || ticket.customerPhone, currentUser, isVerifiedAdmin)}
+                            </span>
                           </>
                         )}
                       </p>

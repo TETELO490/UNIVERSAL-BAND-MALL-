@@ -1,6 +1,23 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isPrimaryAdmin() {
+      return request.auth != null &&
+        request.auth.token.email == 'tetelophokwane98@gmail.com';
+    }
+
+    // Strictly Admin-only private configuration (SnapScan API Key, Webhook Auth Key, Admin PIN hash)
+    match /admin_config/{docId} {
+      allow read, write: if isPrimaryAdmin();
+    }
+
+    // Public SnapCode mirror (ONLY Online Merchant ID / SnapCode, never private API keys)
+    match /app_settings/snapscan_public {
+      allow read: if true;
+      allow write: if isPrimaryAdmin();
+    }
+
+    // Existing app collections
     match /{document=**} {
       allow read, write: if true;
     }

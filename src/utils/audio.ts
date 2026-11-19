@@ -253,7 +253,10 @@ export const triggerBackgroundNotification = async (
           badge: '/icon-192.png',
           tag: tag || 'universal-band-alert',
           requireInteraction: true,
-        });
+          renotify: true,
+          silent: false,
+          vibrate: [800, 400, 800, 1200],
+        } as NotificationOptions);
         return;
       }
     }
@@ -264,6 +267,8 @@ export const triggerBackgroundNotification = async (
       body,
       icon: '/icon-192.png',
       tag: tag || 'universal-band-alert',
+      requireInteraction: true,
+      silent: false,
     });
   } catch {}
 };
@@ -365,9 +370,167 @@ export const playErrorBuzzer = () => {
 
 let activePaymentAlarmInterval: ReturnType<typeof setInterval> | null = null;
 let isPaymentAlarmActiveState: boolean = false;
+let loopingRingtoneAudio: HTMLAudioElement | null = null;
+let cachedRingtoneWavUrl: string | null = null;
+let keepAliveAudio: HTMLAudioElement | null = null;
+let cachedSilentWavUrl: string | null = null;
+let adminWakeLockSentinel: any = null;
+
+function encodePcmToWavDataUrl(samples: Float32Array, sampleRate: number): string {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const dataSize = samples.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return `data:audio/wav;base64,${btoa(binary)}`;
+}
 
 /**
- * Starts a loud looping alarm song that continues indefinitely until explicitly stopped.
+ * Generates a loud WhatsApp-style incoming-call ringtone WAV data URL in memory
+ * so HTML5 <audio loop> keeps ringing even when the phone screen is locked/sleeping.
+ */
+function getWhatsAppStyleRingtoneUrl(): string {
+  if (cachedRingtoneWavUrl) return cachedRingtoneWavUrl;
+  const sampleRate = 16000;
+  const durationSec = 2.6;
+  const totalSamples = Math.floor(sampleRate * durationSec);
+  const samples = new Float32Array(totalSamples);
+
+  // Classic energetic double-burst phone ringtone (like WhatsApp incoming call)
+  const notes = [
+    { start: 0.0, dur: 0.18, f1: 784, f2: 1046.5 },
+    { start: 0.2, dur: 0.18, f1: 987.77, f2: 1318.5 },
+    { start: 0.42, dur: 0.28, f1: 1174.66, f2: 1567.98 },
+    { start: 0.9, dur: 0.18, f1: 784, f2: 1046.5 },
+    { start: 1.1, dur: 0.18, f1: 987.77, f2: 1318.5 },
+    { start: 1.32, dur: 0.34, f1: 1174.66, f2: 1567.98 },
+  ];
+
+  for (const note of notes) {
+    const startIdx = Math.floor(note.start * sampleRate);
+    const endIdx = Math.min(totalSamples, Math.floor((note.start + note.dur) * sampleRate));
+    for (let i = startIdx; i < endIdx; i++) {
+      const t = (i - startIdx) / sampleRate;
+      const env = Math.min(1, t * 40) * Math.min(1, (note.dur - t) * 20);
+      const val =
+        (Math.sin(2 * Math.PI * note.f1 * t) * 0.55 +
+          Math.sin(2 * Math.PI * note.f2 * t) * 0.45) *
+        env *
+        0.95;
+      samples[i] = Math.max(-1, Math.min(1, samples[i] + val));
+    }
+  }
+
+  cachedRingtoneWavUrl = encodePcmToWavDataUrl(samples, sampleRate);
+  return cachedRingtoneWavUrl;
+}
+
+function getSilentKeepAliveUrl(): string {
+  if (cachedSilentWavUrl) return cachedSilentWavUrl;
+  const sampleRate = 8000;
+  const samples = new Float32Array(sampleRate); // 1 second of near-silence
+  for (let i = 0; i < samples.length; i++) {
+    samples[i] = 0.00001 * Math.sin((2 * Math.PI * 20 * i) / sampleRate);
+  }
+  cachedSilentWavUrl = encodePcmToWavDataUrl(samples, sampleRate);
+  return cachedSilentWavUrl;
+}
+
+/**
+ * Keeps the admin audio session and WakeLock alive in the background so mobile browsers/PWAs
+ * do not suspend Firestore ticket listeners or block ringing when the phone screen sleeps.
+ */
+export const startAdminBackgroundKeepAlive = async () => {
+  if (typeof window === 'undefined') return;
+  void unlockAdminAudio();
+
+  try {
+    if (!keepAliveAudio) {
+      keepAliveAudio = new Audio(getSilentKeepAliveUrl());
+      keepAliveAudio.loop = true;
+      keepAliveAudio.volume = 0.01;
+      (keepAliveAudio as any).playsInline = true;
+    }
+    if (keepAliveAudio.paused) {
+      await keepAliveAudio.play().catch(() => {});
+    }
+  } catch {}
+
+  try {
+    if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined') {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'Universal Band Mall — Live Ticket Alerts',
+        artist: 'Background Ringing Active',
+        album: 'Admin Monitor',
+      });
+      navigator.mediaSession.playbackState = 'playing';
+    }
+  } catch {}
+
+  try {
+    if ('wakeLock' in navigator && !adminWakeLockSentinel) {
+      adminWakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+      adminWakeLockSentinel?.addEventListener?.('release', () => {
+        adminWakeLockSentinel = null;
+      });
+    }
+  } catch {}
+};
+
+export const stopAdminBackgroundKeepAlive = () => {
+  try {
+    if (keepAliveAudio) {
+      keepAliveAudio.pause();
+      keepAliveAudio.currentTime = 0;
+    }
+  } catch {}
+  try {
+    if (adminWakeLockSentinel) {
+      void adminWakeLockSentinel.release();
+      adminWakeLockSentinel = null;
+    }
+  } catch {}
+};
+
+/**
+ * Starts a loud WhatsApp-style looping alarm ringtone that continues indefinitely
+ * (even when the phone is sleeping/backgrounded) until explicitly stopped.
  */
 export const startLoopingPaymentAlarm = (config?: Partial<NewOrderSoundConfig> | null) => {
   stopLoopingPaymentAlarm();
@@ -379,29 +542,58 @@ export const startLoopingPaymentAlarm = (config?: Partial<NewOrderSoundConfig> |
     ...(config || {}),
   };
 
-  // Play immediately
-  playNewOrderSound(resolvedConfig);
-
-  // Vibrate if supported
+  // 1. Primary native looping <audio loop> ringtone (keeps playing even when screen is off!)
   try {
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      navigator.vibrate([1000, 400, 1000, 400]);
+    const audioSrc =
+      resolvedConfig.mode === 'custom' && resolvedConfig.customDataUrl
+        ? resolvedConfig.customDataUrl
+        : getWhatsAppStyleRingtoneUrl();
+    loopingRingtoneAudio = new Audio(audioSrc);
+    loopingRingtoneAudio.loop = true;
+    loopingRingtoneAudio.volume = Math.max(0.5, Math.min(1, resolvedConfig.volume ?? 1));
+    (loopingRingtoneAudio as any).playsInline = true;
+    void loopingRingtoneAudio.play().catch(() => {
+      // Fallback to Web Audio synthesizer if HTML5 audio play is blocked
+      playNewOrderSound(resolvedConfig);
+    });
+  } catch {
+    playNewOrderSound(resolvedConfig);
+  }
+
+  // 2. Update MediaSession so lock screen shows incoming ticket alert
+  try {
+    if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined') {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'NEW TICKET — WAITING FOR PAYMENT',
+        artist: 'Universal Band Mall Alert',
+        album: 'Tap to Approve Payment',
+      });
+      navigator.mediaSession.playbackState = 'playing';
     }
   } catch {}
 
-  // Repeating loop every 2.4 seconds until user presses STOP
+  // 3. WhatsApp-style repeating vibration pattern
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([800, 400, 800, 1200]);
+    }
+  } catch {}
+
+  // 4. Repeating safety interval for vibration + Web Audio backup
   activePaymentAlarmInterval = setInterval(() => {
     if (!isPaymentAlarmActiveState) {
       if (activePaymentAlarmInterval) clearInterval(activePaymentAlarmInterval);
       return;
     }
-    playNewOrderSound(resolvedConfig);
+    if (!loopingRingtoneAudio || loopingRingtoneAudio.paused) {
+      playNewOrderSound(resolvedConfig);
+    }
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate([1000, 400, 1000, 400]);
+        navigator.vibrate([800, 400, 800, 1200]);
       }
     } catch {}
-  }, 2400);
+  }, 2600);
 };
 
 /**
@@ -412,6 +604,13 @@ export const stopLoopingPaymentAlarm = () => {
   if (activePaymentAlarmInterval) {
     clearInterval(activePaymentAlarmInterval);
     activePaymentAlarmInterval = null;
+  }
+  if (loopingRingtoneAudio) {
+    try {
+      loopingRingtoneAudio.pause();
+      loopingRingtoneAudio.currentTime = 0;
+    } catch {}
+    loopingRingtoneAudio = null;
   }
   stopActiveOrderSound();
   try {

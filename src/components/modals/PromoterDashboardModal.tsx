@@ -25,6 +25,7 @@ import {
 import { TicketQrScannerModal } from './TicketQrScannerModal';
 import {
   maskPhoneNumber,
+  formatPhoneForViewer,
   downloadEventTicketsLocally,
   getPendingSyncCount,
   syncPendingMovementsWithFirestore,
@@ -41,6 +42,7 @@ import {
   getUserOwnedStoreIds,
   getUserOwnedEventIds,
   isLegacyTestTicket,
+  isUserVerifiedAdminSession,
 } from '../../utils/legacyCleanup';
 import { normalizePhoneDigits } from '../../utils/customerQr';
 import { VendorOrderPickupModal } from '../mall/VendorOrderPickupModal';
@@ -75,6 +77,13 @@ export const PromoterDashboardModal: React.FC = () => {
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => getPendingSyncCount());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  const isViewingAdmin = Boolean(
+    isUserVerifiedAdminSession(currentUser) ||
+    (currentUser?.role || '').toLowerCase() === 'admin' ||
+    currentUser?.email === 'tetelophokwane98@gmail.com' ||
+    (typeof window !== 'undefined' && localStorage.getItem('ub_admin_session') === 'true')
+  );
 
   const handleClose = () => {
     setActiveModal(null);
@@ -546,7 +555,7 @@ export const PromoterDashboardModal: React.FC = () => {
                           </span>
                         </div>
                         <p className="text-[10px] text-gray-400 truncate">
-                          {maskPhoneNumber(ord.customerPhone || '')} • {linkedEventTitle}
+                          {formatPhoneForViewer(ord.customerPhone, currentUser, isViewingAdmin)} • {linkedEventTitle}
                         </p>
                       </div>
                       <span className="text-xs font-black text-emerald-400 shrink-0 tabular-nums">
@@ -618,7 +627,7 @@ export const PromoterDashboardModal: React.FC = () => {
                     </span>
                     <span className="text-[10px] text-gray-400 block truncate">
                       {res.customerName || 'Attendee'}{' '}
-                      {res.customerPhone ? `(${maskPhoneNumber(res.customerPhone)})` : ''} •{' '}
+                      {res.customerPhone ? `(${formatPhoneForViewer(res.customerPhone, currentUser, isViewingAdmin)})` : ''} •{' '}
                       {res.eventName || res.storeName}
                     </span>
                   </div>
@@ -810,7 +819,7 @@ export const PromoterDashboardModal: React.FC = () => {
                         {t.attendeeName || t.customerName}
                       </span>
                       <span className="text-[10px] text-gray-400 font-mono">
-                        {maskPhoneNumber(t.attendeePhone || t.customerPhone || '')} • {t.ticketId || t.bandCode}
+                        {formatPhoneForViewer(t.attendeePhone || t.customerPhone, currentUser, isViewingAdmin)} • {t.ticketId || t.bandCode}
                       </span>
                     </div>
                     <span

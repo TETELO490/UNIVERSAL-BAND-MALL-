@@ -266,6 +266,13 @@ export const ProfilePage: React.FC = () => {
             action: () => navigateTo('/admin/payshap-settings'),
           },
           {
+            id: 'admin-snapscan-settings',
+            title: 'Admin Settings · SnapScan Keys (PIN)',
+            icon: Shield,
+            iconColor: 'text-[#FACC15]',
+            action: () => navigateTo('/admin/snapscan-settings'),
+          },
+          {
             id: 'admin-buy-ticket-alarm',
             title: 'Buy Ticket Alarm Song (Admin Only)',
             icon: Volume2,
